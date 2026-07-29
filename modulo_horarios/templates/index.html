@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXUS - Sistema del Horario INDET v4.0</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+
+    <style>
+        .bg-custom-pause { background-color: #f8f9fa; font-weight: bold; border-left: 3px solid #6c757d; }
+        .bg-modular { background-color: #d1e7dd; border-left: 3px solid #198754; }
+        .bg-basica { background-color: #cfe2ff; border-left: 3px solid #0d6efd; }
+        .table-hover tbody tr:hover { background-color: #f1f5f9; }
+
+        .tabla-horario-compacta { font-size: 0.82rem; }
+        .tabla-horario-compacta th, .tabla-horario-compacta td { padding: 4px 6px !important; vertical-align: middle; }
+        .col-hora { width: 14%; font-size: 0.78rem; }
+        .col-dia { width: 17.2%; }
+
+        .titulo-impresion { display: none; }
+
+        @page { size: A4 landscape; margin: 5mm; }
+
+        @media print {
+            .no-print, .nav-pills, .card-header, form, button, .btn { display: none !important; }
+            html, body { background: #ffffff !important; height: auto !important; margin: 0 !important; padding: 0 !important; }
+            .container { max-width: 100% !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
+            .card { border: none !important; box-shadow: none !important; padding: 0 !important; margin-bottom: 0 !important; }
+            .titulo-impresion { display: block !important; margin-bottom: 12px; }
+            .tabla-horario-compacta { font-size: 8.5pt !important; width: 100% !important; border-collapse: collapse !important; }
+            .tabla-horario-compacta th, .tabla-horario-compacta td { padding: 3px 4px !important; line-height: 1.15 !important; border: 1px solid #b0b0b0 !important; }
+            .table-responsive { overflow: visible !important; }
+        }
+    </style>
+</head>
+<body class="bg-light">
+
+<div class="container pb-5 pt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 no-print">
+        <div>
+            <h1 class="h2 fw-bold text-primary mb-0"><i class="bi bi-cpu-fill me-2"></i>NEXUS Engine CSP</h1>
+            <small class="text-muted">Plataforma de Optimización de Horarios - INDET</small>
+        </div>
+        <div class="d-flex gap-2">
+            <!-- Botón de Exportación PDF Masiva General -->
+            <a href="/exportar_pdf_todos" class="btn btn-success btn-sm fw-bold" target="_blank">
+                <i class="bi bi-file-earmark-pdf-fill me-1"></i> PDF General (Todas las Secciones)
+            </a>
+            <button id="btnImprimirHorario" onclick="window.print()" class="btn btn-outline-primary btn-sm fw-bold">
+                <i class="bi bi-printer-fill me-1"></i> Imprimir Sección Vista
+            </button>
+        </div>
+    </div>
+
+    <div class="card border-0 shadow-sm overflow-hidden mb-4 no-print" style="border-radius: 12px; background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);">
+        <div class="row g-0 align-items-center">
+            <div class="col-md-8 p-4 text-white">
+                <span class="badge bg-white text-primary mb-2 fw-bold text-uppercase px-3 py-2 rounded-pill" style="font-size: 0.75rem;">
+                    <i class="bi bi-stars me-1"></i> INSTITUTO NACIONAL INDET
+                </span>
+                <h2 class="fw-bold mb-2">Calidad e Innovacion Educativa</h2>
+                <p class="mb-3 text-white-50 lead" style="font-size: 0.95rem;">
+                    "El aprendizaje es el único refugio que nunca falla."
+                </p>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-light text-dark py-2 px-3"><i class="bi bi-mortarboard-fill text-primary me-1"></i> BTV & Educación Media</span>
+                    <span class="badge bg-light text-dark py-2 px-3"><i class="bi bi-shield-check text-success me-1"></i> Sistema Activo v4.0</span>
+                </div>
+            </div>
+            <div class="col-md-4 d-none d-md-block text-center p-3">
+                <img src="../static/especialidades.png" alt="Especialidades INDET" class="img-fluid rounded-3 shadow" style="max-height: 160px; object-fit: cover; width: 100%;">
+            </div>
+        </div>
+    </div>
+
+    <div class="titulo-impresion">
+        <div class="d-flex align-items-center justify-content-between pb-2 mb-2" style="border-bottom: 2px solid #0d6efd;">
+            <div class="d-flex align-items-center gap-3">
+                <div class="text-start">
+                    <h4 class="fw-bold text-uppercase mb-0" style="color: #0f172a; font-size: 14pt;">INSTITUTO NACIONAL INDET</h4>
+                    <small class="text-primary fw-bold" style="font-size: 8.5pt;">SISTEMA DE GESTIÓN Y OPTIMIZACIÓN ACADÉMICA - NEXUS CSP</small>
+                </div>
+            </div>
+            <div class="text-end">
+                <span class="badge bg-primary fs-6 px-3 py-1">SECCIÓN: {{ seccion_actual }}</span>
+                <div class="text-muted mt-1" style="font-size: 7.5pt;">Año Lectivo 2026</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4 no-print">
+        <div class="col-md-6">
+            <div class="card bg-success text-white shadow-sm p-3 border-0">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="text-white-50 text-uppercase mb-1">Docentes Activos</h6>
+                        <h3 class="fw-bold mb-0">{{ total_docentes }}</h3>
+                    </div>
+                    <i class="bi bi-person-badge-fill fs-1 text-white-50"></i>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card bg-dark text-white shadow-sm p-3 border-0">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="text-white-50 text-uppercase mb-1">Secciones Totales</h6>
+                        <h3 class="fw-bold mb-0">{{ total_secciones }}</h3>
+                    </div>
+                    <i class="bi bi-door-open-fill fs-1 text-white-50"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <ul class="nav nav-pills mb-3 bg-white p-2 rounded shadow-sm no-print" id="nexusTab" role="tablist">
+        <li class="nav-item"><button class="nav-link active" id="horario-tab" data-bs-toggle="tab" data-bs-target="#horario" type="button"><i class="bi bi-calendar3 me-1"></i> Horarios</button></li>
+        <li class="nav-item"><button class="nav-link" id="secciones-tab" data-bs-toggle="tab" data-bs-target="#secciones" type="button"><i class="bi bi-diagram-3 me-1"></i> Secciones</button></li>
+        <li class="nav-item"><button class="nav-link" id="docentes-tab" data-bs-toggle="tab" data-bs-target="#docentes" type="button"><i class="bi bi-person-vcard me-1"></i> Docentes</button></li>
+        <li class="nav-item"><button class="nav-link" id="materias-tab" data-bs-toggle="tab" data-bs-target="#materias" type="button"><i class="bi bi-book me-1"></i> Materias</button></li>
+    </ul>
+
+    <div class="tab-content pt-2" id="nexusTabContent">
+        <!-- PESTAÑA 1: HORARIOS -->
+        <div class="tab-pane fade show active" id="horario" role="tabpanel">
+
+            <!-- PANEL DE GENERACIÓN GLOBAL Y CONSULTA -->
+            <div class="card shadow-sm p-3 mb-3 no-print">
+                <div class="row align-items-center g-3">
+                    <div class="col-md-5">
+                        <form method="get" action="/">
+                            <label for="seccion_seleccionada" class="form-label fw-bold mb-1">Filtrar para Visualizar Sección:</label>
+                            <select name="seccion_seleccionada" id="seccion_seleccionada" class="form-select" onchange="this.form.submit()">
+                                {% for sec in lista_secciones %}
+                                    <option value="{{ sec }}" {% if sec == seccion_actual %}selected{% endif %}>{{ sec }}</option>
+                                {% endfor %}
+                            </select>
+                        </form>
+                    </div>
+                    <div class="col-md-7 text-end d-flex justify-content-end align-items-center gap-2">
+                        <!-- ACCIÓN PRINCIPAL: GENERADOR GLOBAL UNIFICADO -->
+                        <form action="/generar_horarios_globales" method="post" class="m-0">
+                            <button type="submit" class="btn btn-primary fw-bold">
+                                <i class="bi bi-cpu-fill me-1"></i> ⚡ Generar Horarios Globales (Sin Conflictos)
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            {% if alerta_cruce %}
+            <div class="alert alert-danger d-flex align-items-center mb-3 shadow-sm p-3 rounded no-print" role="alert" style="background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;">
+                <i class="bi bi-exclamation-triangle-fill flex-shrink-0 me-2" style="font-size: 1.5rem;"></i>
+                <div>
+                    <strong>¡Alerta de Cruce de Docentes!</strong> El motor detectó un traslape de horarios y reestructuró la distribución para evitar conflictos.
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="d-flex justify-content-between align-items-center mb-2 no-print">
+                <span class="fw-bold text-secondary">Vista de Horario: <span class="text-primary">{{ seccion_actual }}</span></span>
+                <div>
+                    <span class="badge bg-basica text-dark p-2 me-2"><i class="bi bi-bookmark-fill text-primary"></i> Materia Básica</span>
+                    <span class="badge bg-modular text-dark p-2"><i class="bi bi-bookmark-fill text-success"></i> Módulo Técnico</span>
+                </div>
+            </div>
+
+            <div class="table-responsive bg-white rounded shadow-sm p-2">
+                <table class="table table-bordered text-center align-middle mb-0 tabla-horario-compacta">
+                    <thead class="table-dark">
+                        <tr>
+                            <th class="col-hora">Hora / Bloque</th>
+                            <th class="col-dia">Lunes</th>
+                            <th class="col-dia">Martes</th>
+                            <th class="col-dia">Miércoles</th>
+                            <th class="col-dia">Jueves</th>
+                            <th class="col-dia">Viernes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for fila in tabla_horario %}
+                            {% if fila.es_pausa %}
+                                <tr class="bg-custom-pause">
+                                    <td class="col-hora fw-bold text-muted">{{ fila.hora }}</td>
+                                    <td colspan="5" class="text-uppercase text-muted py-1 bg-light fw-bold" style="letter-spacing: 0.5px;">
+                                        <i class="bi bi-cup-hot-fill me-1 text-secondary"></i> {{ fila.tipo_pausa }}
+                                    </td>
+                                </tr>
+                            {% else %}
+                                <tr>
+                                    <td class="col-hora fw-bold">{{ fila.hora }}</td>
+                                    {% for dia in ['lunes', 'martes', 'miercoles', 'jueves', 'viernes'] %}
+                                        {% set clase = fila[dia] %}
+                                        <td class="{% if clase.tipo == 'Modular' %}bg-modular{% elif clase.tipo == 'Básica' %}bg-basica{% endif %}">
+                                            {% if clase.materia and clase.materia != '-' %}
+                                                <div class="fw-bold text-dark">{{ clase.materia }}</div>
+                                                <small class="text-muted d-block">{{ clase.docente }}</small>
+                                            {% else %}
+                                                <span class="text-muted">-</span>
+                                            {% endif %}
+                                        </td>
+                                    {% endfor %}
+                                </tr>
+                            {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- PESTAÑA 2: SECCIONES -->
+        <div class="tab-pane fade" id="secciones" role="tabpanel">
+            <div class="row">
+                <div class="col-md-5">
+                    <div class="card shadow-sm mb-3">
+                        <div class="card-header bg-primary text-white fw-bold">Registrar Sección</div>
+                        <div class="card-body">
+                            <form action="/api/secciones/crear" method="post" id="formSeccion">
+
+                                <!-- 1. Modalidad / Especialidad -->
+                                <div class="mb-3">
+                                    <label for="selectModalidad" class="form-label fw-bold">1. Seleccionar Modalidad / Especialidad</label>
+                                    <select name="modalidad" id="selectModalidad" class="form-select" onchange="actualizarAniosDisponibles(); generarAbreviacion();" required>
+                                        <option value="" selected disabled>-- Seleccione una especialidad --</option>
+                                        <option value="Bachillerato Tecnico vocacional Sistemas Electricos">Bachillerato Tecnico vocacional Sistemas Electricos</option>
+                                        <option value="Bachillerato Tecnico vocacional Atención Primaria en salud">Bachillerato Tecnico vocacional Atención Primaria en salud</option>
+                                        <option value="Bachillerato Academico">Bachillerato Academico</option>
+                                        <option value="Bachillerato técnico productivo en sistemas eléctricos y energías renovables">Bachillerato técnico productivo en sistemas eléctricos y energías renovables</option>
+                                        <option value="Bachillerato técnico vocacional en desarrollo de software">Bachillerato técnico vocacional en desarrollo de software</option>
+                                        <option value="bachillerato técnico vocacional administrativo contable">bachillerato técnico vocacional administrativo contable</option>
+                                        <option value="Bachillerato técnico vocacional en diseño grafico">Bachillerato técnico vocacional en diseño grafico</option>
+                                        <option value="Bachillerato técnico productivo en salud y bienestar social">Bachillerato técnico productivo en salud y bienestar social</option>
+                                    </select>
+                                </div>
+
+                                <!-- 2. Año Lectivo -->
+                                <div class="mb-3">
+                                    <label for="selectAnio" class="form-label fw-bold">2. Seleccionar Año</label>
+                                    <select name="anio" id="selectAnio" class="form-select" onchange="generarAbreviacion();" disabled required>
+                                        <option value="" selected disabled>-- Seleccione primero una modalidad --</option>
+                                        <option value="1° año">1° año</option>
+                                        <option value="2° año">2° año</option>
+                                        <option value="3° año" id="optTercerAnio">3° año</option>
+                                    </select>
+                                </div>
+
+                                <!-- 3. Grupo / Letra -->
+                                <div class="mb-3">
+                                    <label for="selectGrupo" class="form-label fw-bold">3. Seleccionar Grupo</label>
+                                    <select name="grupo" id="selectGrupo" class="form-select" onchange="generarAbreviacion();" required>
+                                        <option value="" selected disabled>-- Seleccione el grupo --</option>
+                                        <option value="A">A</option>
+                                        <option value="A1">A1</option>
+                                        <option value="A2">A2</option>
+                                        <option value="B">B</option>
+                                        <option value="C">C</option>
+                                        <option value="D">D</option>
+                                        <option value="E">E</option>
+                                    </select>
+                                </div>
+
+                                <div id="previewCodigo" class="alert alert-info py-2 small mb-3">
+                                    <i class="bi bi-magic me-1"></i> La abreviación oficial de la sección se generará automáticamente según la nomenclatura estándar (Ej: <code>BTV-DS-1A</code>).
+                                </div>
+
+                                <button type="submit" class="btn btn-primary w-100 fw-bold">Guardar Sección</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-7">
+                    <div class="card shadow-sm">
+                        <div class="card-body p-0">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Código Sección</th>
+                                        <th>Modalidad</th>
+                                        <th>Año y Grupo</th>
+                                        <th class="text-end">Acción</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for s in secciones %}
+                                        <tr>
+                                            <td class="fw-bold text-primary">{{ s.nombre }}</td>
+                                            <td><small>{{ s.modalidad }}</small></td>
+                                            <td>{{ s.anio }}</td>
+                                            <td class="text-end">
+                                                <form action="/api/secciones/eliminar/{{ s.id }}" method="post" style="display:inline;" onsubmit="return confirm('¿Eliminar esta sección?');">
+                                                    <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PESTAÑA 3: DOCENTES Y CARGAS ACADÉMICAS -->
+        <div class="tab-pane fade" id="docentes" role="tabpanel">
+            <div class="row">
+                <div class="col-md-5">
+                    <div class="card shadow-sm mb-3">
+                        <div class="card-header bg-success text-white fw-bold">Registrar Docente y Cargas</div>
+                        <div class="card-body">
+                            <form action="/api/docentes/crear" method="post">
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">Nombre Completo</label>
+                                    <input type="text" name="nombre" class="form-control" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">Correo Institucional</label>
+                                    <input type="email" name="correo_institucional" class="form-control" required>
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">Turno Preferente</label>
+                                    <select name="turno_preferente" id="selectTurno" class="form-select" onchange="evaluarTurno()" required>
+                                        <option value="" selected disabled>-- Seleccione un Turno --</option>
+                                        <option value="matutino">Matutino (7:00 am - 12:00 pm)</option>
+                                        <option value="vespertino">Vespertino (1:00 pm - 5:50 pm)</option>
+                                        <option value="doble_turno">Doble turno (Matutino y Vespertino)</option>
+                                        <option value="accesible">Accesible (Personalizar por días)</option>
+                                    </select>
+                                </div>
+
+                                <div class="mb-3 d-none p-3 bg-light rounded border" id="boxDias">
+                                    <div class="mb-3">
+                                        <label class="form-label fw-bold text-primary small mb-1">
+                                            <i class="bi bi-sun-fill me-1"></i> Matutino Accesible:
+                                        </label><br>
+                                        {% for d in ['lunes', 'martes', 'miercoles', 'jueves', 'viernes'] %}
+                                            <div class="form-check form-check-inline">
+                                                <input class="form-check-input" type="checkbox" name="dias_accesibles_matutino" value="{{ d }}" id="chk_mat_{{ d }}">
+                                                <label class="form-check-label text-capitalize small" for="chk_mat_{{ d }}">{{ d }}</label>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                    <div>
+                                        <label class="form-label fw-bold text-success small mb-1">
+                                            <i class="bi bi-moon-stars-fill me-1"></i> Vespertino Accesible:
+                                        </label><br>
+                                        {% for d in ['lunes', 'martes', 'miercoles', 'jueves', 'viernes'] %}
+                                            <div class="form-check form-check-inline">
+                                                <input class="form-check-input" type="checkbox" name="dias_accesibles_vespertino" value="{{ d }}" id="chk_vesp_{{ d }}">
+                                                <label class="form-check-label text-capitalize small" for="chk_vesp_{{ d }}">{{ d }}</label>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+
+                                <hr>
+                                <h6>Carga Académica Asignada</h6>
+                                <div id="contenedorCargas">
+                                    <div class="row g-2 mb-2 carga-row">
+                                        <div class="col-md-4">
+                                            <select name="seccion_ids" class="form-select" required>
+                                                <option value="">Sección...</option>
+                                                {% for s in secciones %}
+                                                    <option value="{{ s.id }}">{{ s.nombre }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="col-md-5">
+                                            <select name="materia_ids" class="form-select" required>
+                                                <option value="">Materia...</option>
+                                                {% for m in materias %}
+                                                    <option value="{{ m.id }}">{{ m.nombre }} ({{ m.tipo }})</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <input type="number" name="horas_asignadas" class="form-control" placeholder="M.Bloques" min="1" required>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-outline-secondary mb-3" onclick="agregarFilaCarga()">+ Agregar Sección</button>
+
+                                <button type="submit" class="btn btn-success w-100 fw-bold">Guardar Docente Completo</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-7">
+                    <div class="card shadow-sm">
+                        <div class="card-body p-0">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Docente</th>
+                                        <th>Turno</th>
+                                        <th>Cargas</th>
+                                        <th class="text-end">Acción</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for d in docentes %}
+                                        <tr>
+                                            <td>
+                                                <div class="fw-bold">{{ d.nombre }}</div>
+                                                <small class="text-muted">{{ d.correo_institucional }}</small>
+                                            </td>
+                                            <td><span class="badge bg-secondary text-capitalize">{{ d.turno_preferente }}</span></td>
+                                            <td>
+                                                <ul class="list-unstyled mb-0 small">
+                                                    {% for c in d.cargas %}
+                                                        <li><i class="bi bi-dot"></i>{{ c.seccion.nombre }} - {{ c.materia.nombre }} (<strong>{{ c.medios_bloques_semanales }}</strong> mb)</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </td>
+                                            <td class="text-end">
+                                                <form action="/api/docentes/eliminar/{{ d.id }}" method="post" style="display:inline;" onsubmit="return confirm('¿Eliminar docente?');">
+                                                    <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PESTAÑA 4: MATERIAS -->
+        <div class="tab-pane fade" id="materias" role="tabpanel">
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-warning text-dark fw-bold">Crear Materia</div>
+                        <div class="card-body">
+                            <form action="/api/materias/crear" method="post">
+                                <div class="mb-3">
+                                    <label class="form-label">Nombre de Materia</label>
+                                    <input type="text" name="nombre" class="form-control" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Tipo de Materia</label>
+                                    <select name="tipo" class="form-select">
+                                        <option value="Básica">Básica</option>
+                                        <option value="Modular">Modular</option>
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-warning w-100 fw-bold">Guardar Materia</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-8">
+                    <div class="card shadow-sm">
+                        <div class="card-body p-0">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Nombre</th>
+                                        <th>Tipo</th>
+                                        <th class="text-end">Acción</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for m in materias %}
+                                        <tr>
+                                            <td class="fw-bold">{{ m.nombre }}</td>
+                                            <td>
+                                                <span class="badge {% if m.tipo == 'Modular' %}bg-success{% else %}bg-primary{% endif %}">{{ m.tipo }}</span>
+                                            </td>
+                                            <td class="text-end">
+                                                <form action="/api/materias/eliminar/{{ m.id }}" method="post" style="display:inline;" onsubmit="return confirm('¿Eliminar materia?');">
+                                                    <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SCRIPTS DE JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('tab') === 'secciones') {
+            const tabSecciones = new bootstrap.Tab(document.getElementById('secciones-tab'));
+            tabSecciones.show();
+        }
+    });
+
+    const MAPA_ABREVIACIONES = {
+        "Bachillerato Academico": "BTO-A",
+        "Bachillerato técnico productivo en sistemas eléctricos y energías renovables": "BTP-SEER",
+        "Bachillerato Tecnico vocacional Sistemas Electricos": "BTV-SE",
+        "Bachillerato técnico vocacional en desarrollo de software": "BTV-DS",
+        "bachillerato técnico vocacional administrativo contable": "BTV-AC",
+        "Bachillerato técnico vocacional en diseño grafico": "BTV-DG",
+        "Bachillerato técnico productivo en salud y bienestar social": "BTP-SBS",
+        "Bachillerato Tecnico vocacional Atención Primaria en salud": "BTV-APS"
+    };
+
+    function generarAbreviacion() {
+        const mod = document.getElementById('selectModalidad').value;
+        const anio = document.getElementById('selectAnio').value;
+        const grupo = document.getElementById('selectGrupo').value;
+        const previewDiv = document.getElementById('previewCodigo');
+
+        if (mod && anio && grupo) {
+            const numAnio = anio.match(/\d+/) ? anio.match(/\d+/)[0] : '';
+            const prefijo = MAPA_ABREVIACIONES[mod] || 'SEC';
+            const codigoFinal = `${prefijo}-${numAnio}${grupo}`;
+
+            previewDiv.classList.remove('alert-info');
+            previewDiv.classList.add('alert-success');
+            previewDiv.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i> Código generado: <strong>${codigoFinal}</strong>`;
+        } else {
+            previewDiv.classList.remove('alert-success');
+            previewDiv.classList.add('alert-info');
+            previewDiv.innerHTML = `<i class="bi bi-magic me-1"></i> La abreviación oficial de la sección se generará automáticamente según la nomenclatura estándar (Ej: <code>BTV-DS-1A</code>).`;
+        }
+    }
+
+    function actualizarAniosDisponibles() {
+        const modalidad = document.getElementById('selectModalidad').value;
+        const selectAnio = document.getElementById('selectAnio');
+        const optTercerAnio = document.getElementById('optTercerAnio');
+
+        selectAnio.disabled = false;
+
+        if (modalidad.includes("Academico")) {
+            optTercerAnio.style.display = 'none';
+            if (selectAnio.value === "3° año") {
+                selectAnio.value = "";
+            }
+        } else {
+            optTercerAnio.style.display = 'block';
+        }
+        generarAbreviacion();
+    }
+
+    function evaluarTurno() {
+        const turno = document.getElementById('selectTurno').value;
+        const boxDias = document.getElementById('boxDias');
+        if (turno === 'accesible') {
+            boxDias.classList.remove('d-none');
+        } else {
+            boxDias.classList.add('d-none');
+        }
+    }
+
+    function agregarFilaCarga() {
+        const contenedor = document.getElementById('contenedorCargas');
+        const primeraFila = contenedor.querySelector('.carga-row');
+        const nuevaFila = primeraFila.cloneNode(true);
+
+        nuevaFila.querySelectorAll('select').forEach(s => s.selectedIndex = 0);
+        nuevaFila.querySelector('input').value = '';
+
+        contenedor.appendChild(nuevaFila);
+    }
+</script>
+
+</body>
+</html>
