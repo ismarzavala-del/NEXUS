@@ -16,8 +16,8 @@ INSTITUTE_LAT = 13.35054
 INSTITUTE_LON = -88.34890
 MAX_DISTANCE_METERS = 200.0
 
-# URL del backend de FastAPI (Generador de Horarios)
-FASTAPI_HORARIOS_URL = "http://127.0.0.1:8000"
+# Módulo de Horarios integrado localmente para la nube
+FASTAPI_HORARIOS_URL = "modo_integrado"
 
 st.set_page_config(page_title="NEXUS", page_icon="🎓", layout="wide")
 
@@ -282,13 +282,520 @@ if current_user.role == "Admin":
 
         st.stop()
 
+
+
     elif st.session_state['admin_view'] == 'horarios':
+
         if st.button("⬅️ Volver al Panel Principal NEXUS", key="btn_back_from_horarios_view"):
             st.session_state['admin_view'] = 'dashboard'
+
             st.rerun()
 
         st.divider()
-        st.components.v1.iframe(FASTAPI_HORARIOS_URL, height=850, scrolling=True)
+
+        st.subheader("📅 Módulo Avanzado de Horarios y Carga Académica")
+
+        st.info(
+            "Sistema integrado nativamente: gestión de secciones, docentes, cargas, generación algorítmica y control total.")
+
+        import sqlite3
+
+        import random
+
+        try:
+
+            conn_h = sqlite3.connect("modulo_horarios/database.db")
+
+            cursor_h = conn_h.cursor()
+
+            # Reducido a 4 pestañas limpias y funcionales
+
+            tab_h1, tab_h2, tab_h3, tab_h4 = st.tabs([
+
+                "🏫 Secciones", "📚 Materias", "👨‍🏫 Docentes y Cargas", "👁️ Visualizar y Generar Horarios"
+
+            ])
+
+            # -----------------------------------------------------------------
+
+            # 1. GESTIÓN DE SECCIONES
+
+            # -----------------------------------------------------------------
+
+            with tab_h1:
+
+                st.markdown("#### Gestión y Creación de Secciones")
+
+                MAPA_ABREVIACIONES = {
+
+                    "Bachillerato Academico": "BTO-A",
+
+                    "Bachillerato técnico productivo en sistemas eléctricos y energías renovables": "BTP-SEER",
+
+                    "Bachillerato Tecnico vocacional Sistemas Electricos": "BTV-SE",
+
+                    "Bachillerato técnico vocacional en desarrollo de software": "BTV-DS",
+
+                    "bachillerato técnico vocacional administrativo contable": "BTV-AC",
+
+                    "Bachillerato técnico vocacional en diseño grafico": "BTV-DG",
+
+                    "Bachillerato técnico productivo en salud y bienestar social": "BTP-SBS",
+
+                    "Bachillerato Tecnico vocacional Atención Primaria en salud": "BTV-APS"
+
+                }
+
+                with st.form("form_crear_seccion_nativo"):
+
+                    modalidad_sel = st.selectbox("Modalidad", list(MAPA_ABREVIACIONES.keys()))
+
+                    anio_sel = st.selectbox("Año", ["1° año", "2° año", "3° año"])
+
+                    grupo_sel = st.text_input("Grupo (Ej: A, B, 1)", value="1")
+
+                    btn_sec_sub = st.form_submit_button("➕ Crear Sección Oficial", use_container_width=True)
+
+                    if btn_sec_sub:
+
+                        import re
+
+                        num_anio = re.search(r'\d+', str(anio_sel))
+
+                        num_anio_str = num_anio.group() if num_anio else ""
+
+                        prefijo = MAPA_ABREVIACIONES.get(modalidad_sel, "SEC")
+
+                        nombre_generado = f"{prefijo}-{num_anio_str}{grupo_sel.strip()}"
+
+                        formato_anio = f"{anio_sel} '{grupo_sel.strip()}'"
+
+                        try:
+
+                            cursor_h.execute(
+
+                                "INSERT INTO seccion (nombre, modalidad, anio) VALUES (?, ?, ?)",
+
+                                (nombre_generado, modalidad_sel, formato_anio)
+
+                            )
+
+                            conn_h.commit()
+
+                            st.success(f"¡Sección '{nombre_generado}' creada con éxito!")
+
+                            st.rerun()
+
+                        except Exception as e:
+
+                            st.error(f"Error al crear la sección: {e}")
+
+                st.divider()
+
+                df_secciones = pd.read_sql("SELECT * FROM seccion", conn_h)
+
+                if not df_secciones.empty:
+
+                    st.dataframe(df_secciones, use_container_width=True)
+
+                else:
+
+                    st.warning("No hay secciones registradas.")
+
+            # -----------------------------------------------------------------
+
+            # 2. GESTIÓN DE MATERIAS
+
+            # -----------------------------------------------------------------
+
+            with tab_h2:
+
+                st.markdown("#### Gestión de Materias")
+
+                with st.form("form_crear_materia_nativo"):
+
+                    mat_nombre = st.text_input("Nombre de la Materia")
+
+                    mat_tipo = st.selectbox("Tipo de Materia", ["Básica", "Modular"])
+
+                    btn_mat_sub = st.form_submit_button("➕ Registrar Materia", use_container_width=True)
+
+                    if btn_mat_sub:
+
+                        if mat_nombre.strip():
+
+                            try:
+
+                                cursor_h.execute("INSERT INTO materia (nombre, tipo) VALUES (?, ?)",
+                                                 (mat_nombre.strip(), mat_tipo))
+
+                                conn_h.commit()
+
+                                st.success(f"¡Materia '{mat_nombre.strip()}' guardada con éxito!")
+
+                                st.rerun()
+
+                            except Exception as e:
+
+                                st.error(f"Error: {e}")
+
+                        else:
+
+                            st.warning("Ingresa un nombre válido.")
+
+                st.divider()
+
+                df_mat = pd.read_sql("SELECT * FROM materia", conn_h)
+
+                if not df_mat.empty:
+
+                    st.dataframe(df_mat, use_container_width=True)
+
+                else:
+
+                    st.warning("No hay materias registradas.")
+
+            # -----------------------------------------------------------------
+
+            # 3. GESTIÓN DE DOCENTES Y CARGAS ACADÉMICAS
+
+            # -----------------------------------------------------------------
+
+            with tab_h3:
+
+                st.markdown("#### Registro de Docentes y Asignación de Carga")
+
+                cursor_h.execute("SELECT id, nombre FROM seccion")
+
+                secs_db = cursor_h.fetchall()
+
+                mapa_secs_id = {s[1]: s[0] for s in secs_db}
+
+                cursor_h.execute("SELECT id, nombre FROM materia")
+
+                mats_db = cursor_h.fetchall()
+
+                mapa_mats_id = {m[1]: m[0] for m in mats_db}
+
+                with st.form("form_crear_docente_completo"):
+
+                    doc_nombre = st.text_input("Nombre del Docente")
+
+                    doc_correo = st.text_input("Correo Institucional", value="docente@instituto.edu")
+
+                    doc_turno = st.selectbox("Turno Preferente",
+                                             ["Matutino", "Vespertino", "Doble Turno", "Horario Accesible"])
+
+                    st.markdown("##### Asignación de Carga (Sección + Materia + Horas Semanales)")
+
+                    cargas_ingresadas = []
+
+                    if secs_db and mats_db:
+
+                        for i in range(3):
+
+                            col_c1, col_c2, col_c3 = st.columns(3)
+
+                            with col_c1:
+
+                                s_sel = st.selectbox(f"Sección #{i + 1}", ["Ninguna"] + list(mapa_secs_id.keys()),
+                                                     key=f"c_sec_{i}")
+
+                            with col_c2:
+
+                                m_sel = st.selectbox(f"Materia #{i + 1}", ["Ninguna"] + list(mapa_mats_id.keys()),
+                                                     key=f"c_mat_{i}")
+
+                            with col_c3:
+
+                                h_val = st.number_input(f"Medios Bloques #{i + 1}", min_value=0, max_value=20, value=0,
+                                                        key=f"c_hrs_{i}")
+
+                            if s_sel != "Ninguna" and m_sel != "Ninguna" and h_val > 0:
+                                cargas_ingresadas.append((mapa_secs_id[s_sel], mapa_mats_id[m_sel], h_val))
+
+                    else:
+
+                        st.info("Primero debes crear Secciones y Materias para asignar cargas.")
+
+                    btn_doc_sub = st.form_submit_button("➕ Registrar Docente y Carga", use_container_width=True)
+
+                    if btn_doc_sub:
+
+                        if doc_nombre.strip():
+
+                            cursor_h.execute(
+
+                                "INSERT INTO docente (nombre, correo_institucional, turno_preferente) VALUES (?, ?, ?)",
+
+                                (doc_nombre.strip(), doc_correo.strip(), doc_turno)
+
+                            )
+
+                            doc_id_nuevo = cursor_h.lastrowid
+
+                            for s_id, m_id, hrs in cargas_ingresadas:
+                                cursor_h.execute(
+
+                                    "INSERT INTO cargaacademica (docente_id, seccion_id, materia_id, horas_semanales) VALUES (?, ?, ?, ?)",
+
+                                    (doc_id_nuevo, s_id, m_id, hrs)
+
+                                )
+
+                            conn_h.commit()
+
+                            st.success(f"¡Docente '{doc_nombre.strip()}' registrado con éxito!")
+
+                            st.rerun()
+
+                        else:
+
+                            st.warning("El nombre del docente es obligatorio.")
+
+                st.divider()
+
+                df_doc = pd.read_sql("SELECT * FROM docente", conn_h)
+
+                if not df_doc.empty:
+
+                    st.dataframe(df_doc, use_container_width=True)
+
+                else:
+
+                    st.warning("No hay docentes registrados.")
+
+            # -----------------------------------------------------------------
+
+            # 4. VISUALIZAR EN CUADRÍCULA Y MOTOR DE GENERACIÓN UNIFICADO
+
+            # -----------------------------------------------------------------
+
+            with tab_h4:
+
+                st.markdown("#### ⚡ Panel de Generación y Visualización de Horarios")
+
+                # Botón de Generación Integrado Arriba
+
+                if st.button("🚀 Ejecutar Generador Global de Horarios", type="primary", use_container_width=True):
+
+                    cursor_h.execute("DELETE FROM horario")
+
+                    conn_h.commit()
+
+                    cursor_h.execute(
+                        "SELECT id, docente_id, seccion_id, materia_id, horas_semanales FROM cargaacademica")
+
+                    cargas_raw = cursor_h.fetchall()
+
+                    MEDIOS_BLOQUES = [
+
+                        {"id": 1, "hora": "7:00 am - 7:45 am", "turno": "matutino", "es_pausa": False},
+
+                        {"id": 2, "hora": "7:45 am - 8:30 am", "turno": "matutino", "es_pausa": False},
+
+                        {"id": 3, "hora": "8:40 am - 9:25 am", "turno": "matutino", "es_pausa": False},
+
+                        {"id": 4, "hora": "9:25 am - 10:10 am", "turno": "matutino", "es_pausa": False},
+
+                        {"id": 5, "hora": "10:20 am - 11:05 am", "turno": "matutino", "es_pausa": False},
+
+                        {"id": 6, "hora": "11:05 am - 11:50 am", "turno": "matutino", "es_pausa": False},
+
+                        {"id": 7, "hora": "1:00 pm - 1:45 pm", "turno": "vespertino", "es_pausa": False},
+
+                        {"id": 8, "hora": "1:45 pm - 2:30 pm", "turno": "vespertino", "es_pausa": False},
+
+                        {"id": 9, "hora": "2:40 pm - 3:25 pm", "turno": "vespertino", "es_pausa": False},
+
+                        {"id": 10, "hora": "3:25 pm - 4:10 pm", "turno": "vespertino", "es_pausa": False},
+
+                        {"id": 11, "hora": "4:20 pm - 5:10 pm", "turno": "vespertino", "es_pausa": False},
+
+                        {"id": 12, "hora": "5:10 pm - 5:50 pm", "turno": "vespertino", "es_pausa": False},
+
+                    ]
+
+                    DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+
+                    parejas_naturales = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]
+
+                    docentes_ocupados = set()
+
+                    secciones_ocupadas = set()
+
+                    cargas_lista = list(cargas_raw)
+
+                    random.shuffle(cargas_lista)
+
+                    for c_id, doc_id, sec_id, mat_id, hrs_sem in cargas_lista:
+
+                        horas_pendientes = hrs_sem
+
+                        for dia in DIAS_SEMANA:
+
+                            if horas_pendientes < 2:
+                                break
+
+                            for id1, id2 in parejas_naturales:
+
+                                if horas_pendientes < 2:
+                                    break
+
+                                b1 = next((b for b in MEDIOS_BLOQUES if b["id"] == id1), None)
+
+                                b2 = next((b for b in MEDIOS_BLOQUES if b["id"] == id2), None)
+
+                                if not b1 or not b2:
+                                    continue
+
+                                c_doc1, c_doc2 = (doc_id, dia, b1["id"]), (doc_id, dia, b2["id"])
+
+                                c_sec1, c_sec2 = (sec_id, dia, b1["id"]), (sec_id, dia, b2["id"])
+
+                                if (c_doc1 not in docentes_ocupados and c_doc2 not in docentes_ocupados and
+
+                                        c_sec1 not in secciones_ocupadas and c_sec2 not in secciones_ocupadas):
+
+                                    for bloq in [b1, b2]:
+                                        cursor_h.execute(
+
+                                            "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto) VALUES (?, ?, ?, ?, ?, ?)",
+
+                                            (sec_id, doc_id, mat_id, dia, bloq["id"], bloq["hora"])
+
+                                        )
+
+                                        docentes_ocupados.add((doc_id, dia, bloq["id"]))
+
+                                        secciones_ocupadas.add((sec_id, dia, bloq["id"]))
+
+                                    horas_pendientes -= 2
+
+                    conn_h.commit()
+
+                    st.success("🎉 ¡Horarios generados y distribuidos globalmente con éxito!")
+
+                    st.rerun()
+
+                st.divider()
+
+                # Visualizador en Cuadrícula debajo del botón
+
+                cursor_h.execute("SELECT id, nombre FROM seccion")
+
+                secs_db = cursor_h.fetchall()
+
+                secs_nombres = [r[1] for r in secs_db]
+
+                mapa_secs = {r[1]: r[0] for r in secs_db}
+
+                if secs_nombres:
+
+                    sec_elegida = st.selectbox("Seleccionar Sección a Consultar", secs_nombres,
+                                               key="select_vis_sec_unificado")
+
+                    sec_id_sel = mapa_secs[sec_elegida]
+
+                    MEDIOS_BLOQUES_VIS = [
+
+                        {"id": 1, "hora": "7:00 am - 7:45 am", "es_pausa": False},
+
+                        {"id": 2, "hora": "7:45 am - 8:30 am", "es_pausa": False},
+
+                        {"id": 991, "hora": "8:30 am - 8:40 am", "es_pausa": True, "tipo": "☕ RECESO"},
+
+                        {"id": 3, "hora": "8:40 am - 9:25 am", "es_pausa": False},
+
+                        {"id": 4, "hora": "9:25 am - 10:10 am", "es_pausa": False},
+
+                        {"id": 992, "hora": "10:10 am - 10:20 am", "es_pausa": True, "tipo": "☕ RECESO"},
+
+                        {"id": 5, "hora": "10:20 am - 11:05 am", "es_pausa": False},
+
+                        {"id": 6, "hora": "11:05 am - 11:50 am", "es_pausa": False},
+
+                        {"id": 993, "hora": "11:50 am - 1:00 pm", "es_pausa": True, "tipo": "🍽️ ALMUERZO"},
+
+                        {"id": 7, "hora": "1:00 pm - 1:45 pm", "es_pausa": False},
+
+                        {"id": 8, "hora": "1:45 pm - 2:30 pm", "es_pausa": False},
+
+                        {"id": 994, "hora": "2:30 pm - 2:40 pm", "es_pausa": True, "tipo": "☕ RECESO"},
+
+                        {"id": 9, "hora": "2:40 pm - 3:25 pm", "es_pausa": False},
+
+                        {"id": 10, "hora": "3:25 pm - 4:10 pm", "es_pausa": False},
+
+                        {"id": 995, "hora": "4:10 pm - 4:20 pm", "es_pausa": True, "tipo": "☕ RECESO"},
+
+                        {"id": 11, "hora": "4:20 pm - 5:10 pm", "es_pausa": False},
+
+                        {"id": 12, "hora": "5:10 pm - 5:50 pm", "es_pausa": False},
+
+                    ]
+
+                    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+
+                    tabla_matriz = []
+
+                    for b in MEDIOS_BLOQUES_VIS:
+
+                        fila = {"Hora / Bloque": b["hora"]}
+
+                        if b["es_pausa"]:
+
+                            for d in dias_semana:
+                                fila[d] = b["tipo"]
+
+                        else:
+
+                            for d in dias_semana:
+
+                                cursor_h.execute("""
+
+                                                 SELECT m.nombre, doc.nombre
+
+                                                 FROM horario h
+
+                                                          JOIN materia m ON h.materia_id = m.id
+
+                                                          JOIN docente doc ON h.docente_id = doc.id
+
+                                                 WHERE h.seccion_id = ?
+                                                   AND h.dia = ?
+                                                   AND h.bloque_id = ?
+
+                                                 """, (sec_id_sel, d, b["id"]))
+
+                                res = cursor_h.fetchone()
+
+                                if res:
+
+                                    fila[d] = f"{res[0]}\n({res[1]})"
+
+                                else:
+
+                                    fila[d] = "-"
+
+                        tabla_matriz.append(fila)
+
+                    df_final_matriz = pd.DataFrame(tabla_matriz)
+
+                    st.markdown(f"##### Vista de Horario en Cuadrícula: **{sec_elegida}**")
+
+                    st.dataframe(df_final_matriz, use_container_width=True, hide_index=True)
+
+                else:
+
+                    st.info("No hay secciones creadas para visualizar.")
+
+            conn_h.close()
+
+        except Exception as ex:
+
+            st.error(f"Error operando el módulo de horarios: {ex}")
+
         st.stop()
 
     elif st.session_state['admin_view'] == 'asistencia':
