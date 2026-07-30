@@ -93,3 +93,18 @@ class Asistencia(Base):
     observacion = Column(String, nullable=True)
 
     estudiante = relationship("Estudiante", back_populates="asistencias")
+
+    class Horario(Base):
+        __tablename__ = "horarios"
+
+        id = Column(Integer, primary_key=True, index=True)
+        seccion_id = Column(Integer, ForeignKey("secciones.id"))
+        docente_id = Column(Integer, ForeignKey("docentes.id"))
+        materia_id = Column(Integer, ForeignKey("materias.id"))
+        dia = Column(String)
+        bloque_id = Column(Integer)
+        hora_texto = Column(String)
+
+        seccion = relationship("Seccion")
+        docente = relationship("Docente")
+        materia = relationship("Materia")

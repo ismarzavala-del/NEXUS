@@ -46,7 +46,7 @@ if st.session_state['user'] is None:
         username_input = st.text_input("Usuario", key="login_user_input")
         password_input = st.text_input("Contraseña", type="password", key="login_pass_input")
 
-        if st.button("Ingresar", type="primary", use_container_width=True, key="login_submit_btn"):
+        if st.button("Ingresar", type="primary", width='stretch', key="login_submit_btn"):
             user_found = session.query(User).filter_by(username=username_input, password=password_input).first()
             if user_found:
                 st.session_state['user'] = user_found
@@ -264,7 +264,7 @@ if current_user.role == "Admin":
                 st.caption(
                     "Gestión y programación de horarios institucionales, asignación de materias y carga académica.")
                 st.write("")
-                if st.button("👉 Ingresar a Módulo de Horarios", type="primary", use_container_width=True,
+                if st.button("👉 Ingresar a Módulo de Horarios", type="primary", width='stretch',
                              key="btn_goto_horarios_dash"):
                     st.session_state['admin_view'] = 'horarios'
                     st.rerun()
@@ -275,7 +275,7 @@ if current_user.role == "Admin":
                 st.caption(
                     "Control inteligente de asistencia, geolocalización, seguimiento de casos y semáforo de permanencia.")
                 st.write("")
-                if st.button("👉 Ingresar a Módulo de Asistencia", type="primary", use_container_width=True,
+                if st.button("👉 Ingresar a Módulo de Asistencia", type="primary", width='stretch',
                              key="btn_goto_asistencia_dash"):
                     st.session_state['admin_view'] = 'asistencia'
                     st.rerun()
@@ -303,13 +303,24 @@ if current_user.role == "Admin":
         import random
 
         try:
-
             conn_h = sqlite3.connect("modulo_horarios/database.db")
-
             cursor_h = conn_h.cursor()
 
-            # Reducido a 4 pestañas limpias y funcionales
+            # --- PARCHE QUIRÚRGICO: Asegurar columnas de días en la tabla docente ---
+            try:
+                cursor_h.execute("ALTER TABLE docente ADD COLUMN dias_matutino TEXT;")
+                conn_h.commit()
+            except Exception:
+                pass
 
+            try:
+                cursor_h.execute("ALTER TABLE docente ADD COLUMN dias_vespertino TEXT;")
+                conn_h.commit()
+            except Exception:
+                pass
+            # ------------------------------------------------------------------------
+
+            # Reducido a 4 pestañas limpias y funcionales
             tab_h1, tab_h2, tab_h3, tab_h4 = st.tabs([
 
                 "🏫 Secciones", "📚 Materias", "👨‍🏫 Docentes y Cargas", "👁️ Visualizar y Generar Horarios"
@@ -317,493 +328,539 @@ if current_user.role == "Admin":
             ])
 
             # -----------------------------------------------------------------
-
             # 1. GESTIÓN DE SECCIONES
-
             # -----------------------------------------------------------------
-
             with tab_h1:
-
                 st.markdown("#### Gestión y Creación de Secciones")
 
                 MAPA_ABREVIACIONES = {
-
                     "Bachillerato Academico": "BTO-A",
-
                     "Bachillerato técnico productivo en sistemas eléctricos y energías renovables": "BTP-SEER",
-
                     "Bachillerato Tecnico vocacional Sistemas Electricos": "BTV-SE",
-
                     "Bachillerato técnico vocacional en desarrollo de software": "BTV-DS",
-
                     "bachillerato técnico vocacional administrativo contable": "BTV-AC",
-
                     "Bachillerato técnico vocacional en diseño grafico": "BTV-DG",
-
                     "Bachillerato técnico productivo en salud y bienestar social": "BTP-SBS",
-
                     "Bachillerato Tecnico vocacional Atención Primaria en salud": "BTV-APS"
-
                 }
 
                 with st.form("form_crear_seccion_nativo"):
-
                     modalidad_sel = st.selectbox("Modalidad", list(MAPA_ABREVIACIONES.keys()))
-
                     anio_sel = st.selectbox("Año", ["1° año", "2° año", "3° año"])
-
-                    grupo_sel = st.text_input("Grupo (Ej: A, B, 1)", value="1")
-
-                    btn_sec_sub = st.form_submit_button("➕ Crear Sección Oficial", use_container_width=True)
+                    grupo_sel = st.selectbox("Grupo", ["A", "A1", "A2", "B", "C", "D", "E"])
+                    btn_sec_sub = st.form_submit_button("➕ Crear Sección Oficial", width='stretch')
 
                     if btn_sec_sub:
-
                         import re
 
                         num_anio = re.search(r'\d+', str(anio_sel))
-
                         num_anio_str = num_anio.group() if num_anio else ""
-
                         prefijo = MAPA_ABREVIACIONES.get(modalidad_sel, "SEC")
-
-                        nombre_generado = f"{prefijo}-{num_anio_str}{grupo_sel.strip()}"
-
-                        formato_anio = f"{anio_sel} '{grupo_sel.strip()}'"
+                        nombre_generado = f"{prefijo}-{num_anio_str}{grupo_sel}"
+                        formato_anio = f"{anio_sel} '{grupo_sel}'"
 
                         try:
-
                             cursor_h.execute(
-
                                 "INSERT INTO seccion (nombre, modalidad, anio) VALUES (?, ?, ?)",
-
                                 (nombre_generado, modalidad_sel, formato_anio)
-
                             )
-
                             conn_h.commit()
-
                             st.success(f"¡Sección '{nombre_generado}' creada con éxito!")
-
                             st.rerun()
-
                         except Exception as e:
-
                             st.error(f"Error al crear la sección: {e}")
 
                 st.divider()
+                st.markdown("#### 🗑️ Eliminar Sección")
 
-                df_secciones = pd.read_sql("SELECT * FROM seccion", conn_h)
+                cursor_h.execute("SELECT id, nombre FROM seccion ORDER BY nombre")
+                secs_existentes = cursor_h.fetchall()
 
-                if not df_secciones.empty:
+                if secs_existentes:
+                    mapa_secs_del = {s[1]: s[0] for s in secs_existentes}
+                    sec_a_borrar = st.selectbox("Selecciona la sección a eliminar", list(mapa_secs_del.keys()),
+                                                key="select_del_sec")
 
-                    st.dataframe(df_secciones, use_container_width=True)
-
+                    if st.button("❌ Eliminar Sección Seleccionada", type="primary", width='stretch'):
+                        sec_id_del = mapa_secs_del[sec_a_borrar]
+                        try:
+                            # Opcional: Eliminar primero los registros asociados en horario y carga si es necesario para evitar errores de integridad
+                            cursor_h.execute("DELETE FROM horario WHERE seccion_id = ?", (sec_id_del,))
+                            cursor_h.execute("DELETE FROM cargaacademica WHERE seccion_id = ?", (sec_id_del,))
+                            cursor_h.execute("DELETE FROM seccion WHERE id = ?", (sec_id_del,))
+                            conn_h.commit()
+                            st.success(f"¡Sección '{sec_a_borrar}' eliminada correctamente!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al eliminar la sección: {e}")
                 else:
+                    st.info("No hay secciones disponibles para eliminar.")
 
+                st.divider()
+                df_secciones = pd.read_sql("SELECT * FROM seccion", conn_h)
+                if not df_secciones.empty:
+                    st.dataframe(df_secciones, width='stretch')
+                else:
                     st.warning("No hay secciones registradas.")
 
-            # -----------------------------------------------------------------
-
-            # 2. GESTIÓN DE MATERIAS
-
-            # -----------------------------------------------------------------
-
+                # -----------------------------------------------------------------
+                # 2. GESTIÓN DE MATERIAS
+                # -----------------------------------------------------------------
             with tab_h2:
+                        st.markdown("#### Gestión de Materias")
+                        with st.form("form_crear_materia_nativo"):
+                            mat_nombre = st.text_input("Nombre de la Materia")
+                            mat_tipo = st.selectbox("Tipo de Materia", ["Básica", "Modular"])
+                            btn_mat_sub = st.form_submit_button("➕ Registrar Materia", width='stretch')
 
-                st.markdown("#### Gestión de Materias")
+                            if btn_mat_sub:
+                                if mat_nombre.strip():
+                                    try:
+                                        cursor_h.execute("INSERT INTO materia (nombre, tipo) VALUES (?, ?)",
+                                                         (mat_nombre.strip(), mat_tipo))
+                                        conn_h.commit()
+                                        st.success(f"¡Materia '{mat_nombre.strip()}' guardada con éxito!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error: {e}")
+                                else:
+                                    st.warning("Ingresa un nombre válido.")
 
-                with st.form("form_crear_materia_nativo"):
+                        st.divider()
+                        st.markdown("#### 🗑️ Eliminar Materia")
 
-                    mat_nombre = st.text_input("Nombre de la Materia")
+                        cursor_h.execute("SELECT id, nombre FROM materia")
+                        mats_existentes = cursor_h.fetchall()
 
-                    mat_tipo = st.selectbox("Tipo de Materia", ["Básica", "Modular"])
+                        if mats_existentes:
+                            mapa_mats_del = {m[1]: m[0] for m in mats_existentes}
+                            mat_a_borrar = st.selectbox("Selecciona la materia a eliminar", list(mapa_mats_del.keys()),
+                                                        key="select_del_mat")
 
-                    btn_mat_sub = st.form_submit_button("➕ Registrar Materia", use_container_width=True)
-
-                    if btn_mat_sub:
-
-                        if mat_nombre.strip():
-
-                            try:
-
-                                cursor_h.execute("INSERT INTO materia (nombre, tipo) VALUES (?, ?)",
-                                                 (mat_nombre.strip(), mat_tipo))
-
-                                conn_h.commit()
-
-                                st.success(f"¡Materia '{mat_nombre.strip()}' guardada con éxito!")
-
-                                st.rerun()
-
-                            except Exception as e:
-
-                                st.error(f"Error: {e}")
-
+                            if st.button("❌ Eliminar Materia Seleccionada", type="primary", width='stretch'):
+                                mat_id_del = mapa_mats_del[mat_a_borrar]
+                                try:
+                                    cursor_h.execute("DELETE FROM horario WHERE materia_id = ?", (mat_id_del,))
+                                    cursor_h.execute("DELETE FROM cargaacademica WHERE materia_id = ?", (mat_id_del,))
+                                    cursor_h.execute("DELETE FROM materia WHERE id = ?", (mat_id_del,))
+                                    conn_h.commit()
+                                    st.success(f"¡Materia '{mat_a_borrar}' eliminada correctamente!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al eliminar la materia: {e}")
                         else:
+                            st.info("No hay materias disponibles para eliminar.")
 
-                            st.warning("Ingresa un nombre válido.")
-
-                st.divider()
-
-                df_mat = pd.read_sql("SELECT * FROM materia", conn_h)
-
-                if not df_mat.empty:
-
-                    st.dataframe(df_mat, use_container_width=True)
-
-                else:
-
-                    st.warning("No hay materias registradas.")
-
-            # -----------------------------------------------------------------
-
-            # 3. GESTIÓN DE DOCENTES Y CARGAS ACADÉMICAS
-
-            # -----------------------------------------------------------------
-
+                        st.divider()
+                        df_mat = pd.read_sql("SELECT * FROM materia", conn_h)
+                        if not df_mat.empty:
+                            st.dataframe(df_mat, width='stretch')
+                        else:
+                            st.warning("No hay materias registradas.")
+                # -----------------------------------------------------------------
+                # 3. GESTIÓN DE DOCENTES Y CARGAS ACADÉMICAS
+                # -----------------------------------------------------------------
             with tab_h3:
+                                st.markdown("#### Registro de Docentes y Asignación de Carga")
 
-                st.markdown("#### Registro de Docentes y Asignación de Carga")
+                                cursor_h.execute("SELECT id, nombre FROM seccion ORDER BY nombre")
+                                secs_db = cursor_h.fetchall()
+                                mapa_secs_id = {s[1]: s[0] for s in secs_db}
 
-                cursor_h.execute("SELECT id, nombre FROM seccion")
+                                cursor_h.execute("SELECT id, nombre FROM materia")
+                                mats_db = cursor_h.fetchall()
+                                mapa_mats_id = {m[1]: m[0] for m in mats_db}
 
-                secs_db = cursor_h.fetchall()
+                                if 'num_cargas_dinamicas' not in st.session_state:
+                                    st.session_state['num_cargas_dinamicas'] = 1
 
-                mapa_secs_id = {s[1]: s[0] for s in secs_db}
+                                doc_nombre = st.text_input("Nombre del Docente", key="doc_nombre_input")
+                                doc_correo = st.text_input("Correo Institucional", value="docente@instituto.edu",
+                                                           key="doc_correo_input")
 
-                cursor_h.execute("SELECT id, nombre FROM materia")
-
-                mats_db = cursor_h.fetchall()
-
-                mapa_mats_id = {m[1]: m[0] for m in mats_db}
-
-                with st.form("form_crear_docente_completo"):
-
-                    doc_nombre = st.text_input("Nombre del Docente")
-
-                    doc_correo = st.text_input("Correo Institucional", value="docente@instituto.edu")
-
-                    doc_turno = st.selectbox("Turno Preferente",
-                                             ["Matutino", "Vespertino", "Doble Turno", "Horario Accesible"])
-
-                    st.markdown("##### Asignación de Carga (Sección + Materia + Horas Semanales)")
-
-                    cargas_ingresadas = []
-
-                    if secs_db and mats_db:
-
-                        for i in range(3):
-
-                            col_c1, col_c2, col_c3 = st.columns(3)
-
-                            with col_c1:
-
-                                s_sel = st.selectbox(f"Sección #{i + 1}", ["Ninguna"] + list(mapa_secs_id.keys()),
-                                                     key=f"c_sec_{i}")
-
-                            with col_c2:
-
-                                m_sel = st.selectbox(f"Materia #{i + 1}", ["Ninguna"] + list(mapa_mats_id.keys()),
-                                                     key=f"c_mat_{i}")
-
-                            with col_c3:
-
-                                h_val = st.number_input(f"Medios Bloques #{i + 1}", min_value=0, max_value=20, value=0,
-                                                        key=f"c_hrs_{i}")
-
-                            if s_sel != "Ninguna" and m_sel != "Ninguna" and h_val > 0:
-                                cargas_ingresadas.append((mapa_secs_id[s_sel], mapa_mats_id[m_sel], h_val))
-
-                    else:
-
-                        st.info("Primero debes crear Secciones y Materias para asignar cargas.")
-
-                    btn_doc_sub = st.form_submit_button("➕ Registrar Docente y Carga", use_container_width=True)
-
-                    if btn_doc_sub:
-
-                        if doc_nombre.strip():
-
-                            cursor_h.execute(
-
-                                "INSERT INTO docente (nombre, correo_institucional, turno_preferente) VALUES (?, ?, ?)",
-
-                                (doc_nombre.strip(), doc_correo.strip(), doc_turno)
-
-                            )
-
-                            doc_id_nuevo = cursor_h.lastrowid
-
-                            for s_id, m_id, hrs in cargas_ingresadas:
-                                cursor_h.execute(
-
-                                    "INSERT INTO cargaacademica (docente_id, seccion_id, materia_id, horas_semanales) VALUES (?, ?, ?, ?)",
-
-                                    (doc_id_nuevo, s_id, m_id, hrs)
-
+                                doc_turno = st.selectbox(
+                                    "Turno Preferente",
+                                    ["Matutino", "Vespertino", "Doble Turno", "Horario Accesible"],
+                                    key="doc_turno_select"
                                 )
 
-                            conn_h.commit()
+                                # Variables para capturar los días por turno
+                                dias_matutino_str = ""
+                                dias_vespertino_str = ""
 
-                            st.success(f"¡Docente '{doc_nombre.strip()}' registrado con éxito!")
+                                if doc_turno == "Horario Accesible":
+                                    st.markdown("##### 🗓️ Configurar Días por Turno")
+                                    dias_semana_opciones = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
 
-                            st.rerun()
+                                    col_d1, col_d2 = st.columns(2)
+                                    with col_d1:
+                                        dias_mat = st.multiselect("🌅 Días en Turno Matutino", dias_semana_opciones,
+                                                                  key="form_dias_mat")
+                                    with col_d2:
+                                        dias_vesp = st.multiselect("🌇 Días en Turno Vespertino", dias_semana_opciones,
+                                                                   key="form_dias_vesp")
 
-                        else:
+                                    dias_matutino_str = ", ".join(dias_mat) if dias_mat else ""
+                                    dias_vespertino_str = ", ".join(dias_vesp) if dias_vesp else ""
 
-                            st.warning("El nombre del docente es obligatorio.")
+                                st.divider()
+                                st.markdown("##### Asignación de Carga (Sección + Materia + Horas Semanales)")
 
-                st.divider()
+                                cargas_ingresadas = []
+                                if secs_db and mats_db:
+                                    for i in range(st.session_state['num_cargas_dinamicas']):
+                                        col_c1, col_c2, col_c3 = st.columns(3)
+                                        with col_c1:
+                                            s_sel = st.selectbox(f"Sección #{i + 1}",
+                                                                 ["Ninguna"] + list(mapa_secs_id.keys()),
+                                                                 key=f"c_sec_{i}")
+                                        with col_c2:
+                                            m_sel = st.selectbox(f"Materia #{i + 1}",
+                                                                 ["Ninguna"] + list(mapa_mats_id.keys()),
+                                                                 key=f"c_mat_{i}")
+                                        with col_c3:
+                                            h_val = st.number_input(f"Medios Bloques #{i + 1}", min_value=0,
+                                                                    max_value=20, value=0,
+                                                                    key=f"c_hrs_{i}")
 
-                df_doc = pd.read_sql("SELECT * FROM docente", conn_h)
+                                        if s_sel != "Ninguna" and m_sel != "Ninguna" and h_val > 0:
+                                            cargas_ingresadas.append((mapa_secs_id[s_sel], mapa_mats_id[m_sel], h_val))
+                                else:
+                                    st.info("Primero debes crear Secciones y Materias para asignar cargas.")
 
-                if not df_doc.empty:
+                                if secs_db and mats_db:
+                                    if st.button("➕ Agregar otra materia/carga", width='stretch',
+                                                 key="btn_add_carga_extra"):
+                                        st.session_state['num_cargas_dinamicas'] += 1
+                                        st.rerun()
 
-                    st.dataframe(df_doc, use_container_width=True)
+                                st.divider()
 
-                else:
+                                if st.button("🚀 Registrar Docente y Carga Oficial", width='stretch',
+                                             key="btn_registrar_docente_final"):
+                                    if doc_nombre.strip():
+                                        try:
+                                            cursor_h.execute(
+                                                "INSERT INTO docente (nombre, correo_institucional, turno_preferente, dias_matutino, dias_vespertino) VALUES (?, ?, ?, ?, ?)",
+                                                (doc_nombre.strip(), doc_correo.strip(), doc_turno, dias_matutino_str,
+                                                 dias_vespertino_str)
+                                            )
+                                            doc_id_nuevo = cursor_h.lastrowid
 
-                    st.warning("No hay docentes registrados.")
+                                            for s_id, m_id, hrs in cargas_ingresadas:
+                                                cursor_h.execute(
+                                                    "INSERT INTO cargaacademica (docente_id, seccion_id, materia_id, horas_semanales) VALUES (?, ?, ?, ?)",
+                                                    (doc_id_nuevo, s_id, m_id, hrs)
+                                                )
+                                            conn_h.commit()
+                                            st.session_state['num_cargas_dinamicas'] = 1
+                                            st.success(f"¡Docente '{doc_nombre.strip()}' registrado con éxito!")
+                                            st.rerun()
+                                        except Exception as err:
+                                            st.error(f"Error detallado al registrar: {err}")
+                                    else:
+                                        st.warning("El nombre del docente es obligatorio.")
 
-            # -----------------------------------------------------------------
+                                st.divider()
+                                st.markdown("##### 📋 Listado y Gestión de Docentes Registrados")
 
-            # 4. VISUALIZAR EN CUADRÍCULA Y MOTOR DE GENERACIÓN UNIFICADO
+                                cursor_h.execute("""
+                                                 SELECT d.id,
+                                                        d.nombre,
+                                                        d.correo_institucional,
+                                                        d.turno_preferente,
+                                                        d.dias_matutino,
+                                                        d.dias_vespertino,
+                                                        s.nombre as seccion,
+                                                        m.nombre as materia,
+                                                        c.horas_semanales
+                                                 FROM docente d
+                                                          LEFT JOIN cargaacademica c ON d.id = c.docente_id
+                                                          LEFT JOIN seccion s ON c.seccion_id = s.id
+                                                          LEFT JOIN materia m ON c.materia_id = m.id
+                                                 """)
+                                datos_registrados = cursor_h.fetchall()
 
-            # -----------------------------------------------------------------
+                                if datos_registrados:
+                                    import pandas as pd
 
+                                    df_docentes = pd.DataFrame(datos_registrados, columns=[
+                                        "ID", "Nombre", "Correo", "Turno", "Días Mat.", "Días Vesp.", "Sección",
+                                        "Materia", "Horas"
+                                    ])
+                                    st.dataframe(df_docentes, width='stretch')
+
+                                    st.markdown("##### 🗑️ Eliminar Docente")
+                                    # Obtener lista única de docentes para eliminar
+                                    cursor_h.execute("SELECT id, nombre FROM docente")
+                                    docentes_db = cursor_h.fetchall()
+
+                                    if docentes_db:
+                                        mapa_docentes_del = {f"{d[1]} (ID: {d[0]})": d[0] for d in docentes_db}
+                                        docente_a_borrar_sel = st.selectbox(
+                                            "Selecciona el docente que deseas eliminar",
+                                            list(mapa_docentes_del.keys()),
+                                            key="select_docente_eliminar"
+                                        )
+
+                                        if st.button("🗑️ Eliminar Docente Seleccionado", width='stretch',
+                                                     key="btn_ejecutar_eliminar_docente"):
+                                            doc_id_del = mapa_docentes_del[docente_a_borrar_sel]
+                                            try:
+                                                # Borrar primero la carga académica asociada por la llave foránea
+                                                cursor_h.execute("DELETE FROM cargaacademica WHERE docente_id = ?",
+                                                                 (doc_id_del,))
+                                                # Borrar al docente
+                                                cursor_h.execute("DELETE FROM docente WHERE id = ?", (doc_id_del,))
+                                                conn_h.commit()
+                                                st.success(f"¡Docente eliminado con éxito junto con su carga asociada!")
+                                                st.rerun()
+                                            except Exception as err:
+                                                st.error(f"Error al eliminar el registro: {err}")
+                                else:
+                                    st.info("Aún no hay docentes registrados en la base de datos.")
+                                # -----------------------------------------------------------------
+                                # 4. VISUALIZAR EN CUADRÍCULA Y MOTOR DE GENERACIÓN UNIFICADO
+                                # -----------------------------------------------------------------
             with tab_h4:
 
                 st.markdown("#### ⚡ Panel de Generación y Visualización de Horarios")
 
                 # Botón de Generación Integrado Arriba
+                if st.button("🚀 Ejecutar Generador Global de Horarios", type="primary",
+                             width='stretch',
+                             key="btn_ejecutar_gen_global_h4"):
 
-                if st.button("🚀 Ejecutar Generador Global de Horarios", type="primary", use_container_width=True):
-
-                    cursor_h.execute("DELETE FROM horario")
-
-                    conn_h.commit()
-
-                    cursor_h.execute(
-                        "SELECT id, docente_id, seccion_id, materia_id, horas_semanales FROM cargaacademica")
-
+                    # --- CONSULTAR CARGAS ACADÉMICAS + TURNO Y DÍAS DEL DOCENTE ---
+                    cursor_h.execute("""
+                        SELECT ca.id, ca.docente_id, ca.seccion_id, ca.materia_id, ca.horas_semanales,
+                               d.turno_preferente, d.dias_matutino, d.dias_vespertino
+                        FROM cargaacademica ca
+                        JOIN docente d ON ca.docente_id = d.id
+                    """)
                     cargas_raw = cursor_h.fetchall()
 
-                    MEDIOS_BLOQUES = [
+                    # --- DIAGNÓSTICO Y VALIDACIÓN ---
+                    if not cargas_raw:
+                        st.warning(
+                            "⚠️ La tabla `cargaacademica` está completamente vacía. Primero debes registrar cargas académicas a los docentes.")
+                    else:
+                        MEDIOS_BLOQUES = [
+                            {"id": 1, "hora": "7:00 am - 7:45 am"},
+                            {"id": 2, "hora": "7:45 am - 8:30 am"},
+                            {"id": 3, "hora": "8:40 am - 9:25 am"},
+                            {"id": 4, "hora": "9:25 am - 10:10 am"},
+                            {"id": 5, "hora": "10:20 am - 11:05 am"},
+                            {"id": 6, "hora": "11:05 am - 11:50 am"},
+                            {"id": 7, "hora": "1:00 pm - 1:45 pm"},
+                            {"id": 8, "hora": "1:45 pm - 2:30 pm"},
+                            {"id": 9, "hora": "2:40 pm - 3:25 pm"},
+                            {"id": 10, "hora": "3:25 pm - 4:10 pm"},
+                            {"id": 11, "hora": "4:20 pm - 5:10 pm"},
+                            {"id": 12, "hora": "5:10 pm - 5:50 pm"},
+                        ]
 
-                        {"id": 1, "hora": "7:00 am - 7:45 am", "turno": "matutino", "es_pausa": False},
+                        DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+                        # Bloques matutinos (7:00 am - 12:00 pm) y vespertinos (1:00 pm - 5:50 pm)
+                        # agrupados en parejas: cada pareja = 2 medios bloques seguidos = 1 bloque completo.
+                        PAREJAS_MATUTINO = [(1, 2), (3, 4), (5, 6)]
+                        PAREJAS_VESPERTINO = [(7, 8), (9, 10), (11, 12)]
 
-                        {"id": 2, "hora": "7:45 am - 8:30 am", "turno": "matutino", "es_pausa": False},
+                        import random
 
-                        {"id": 3, "hora": "8:40 am - 9:25 am", "turno": "matutino", "es_pausa": False},
+                        def slots_permitidos(turno, dias_mat_str, dias_vesp_str):
+                            """Devuelve la lista de (dia, (id1, id2)) que un docente puede usar
+                            según su turno preferente y, si aplica, sus días personalizados."""
+                            dias_mat_str = dias_mat_str or ""
+                            dias_vesp_str = dias_vesp_str or ""
+                            slots = []
+                            if turno == "Matutino":
+                                for d in DIAS_SEMANA:
+                                    for p in PAREJAS_MATUTINO:
+                                        slots.append((d, p))
+                            elif turno == "Vespertino":
+                                for d in DIAS_SEMANA:
+                                    for p in PAREJAS_VESPERTINO:
+                                        slots.append((d, p))
+                            elif turno == "Doble Turno":
+                                for d in DIAS_SEMANA:
+                                    for p in PAREJAS_MATUTINO + PAREJAS_VESPERTINO:
+                                        slots.append((d, p))
+                            elif turno == "Horario Accesible":
+                                dias_mat = [x.strip() for x in dias_mat_str.split(",") if x.strip()]
+                                dias_vesp = [x.strip() for x in dias_vesp_str.split(",") if x.strip()]
+                                for d in dias_mat:
+                                    for p in PAREJAS_MATUTINO:
+                                        slots.append((d, p))
+                                for d in dias_vesp:
+                                    for p in PAREJAS_VESPERTINO:
+                                        slots.append((d, p))
+                            return slots
 
-                        {"id": 4, "hora": "9:25 am - 10:10 am", "turno": "matutino", "es_pausa": False},
+                        # --- REGENERACIÓN GLOBAL: se limpia el horario anterior antes de crear el nuevo ---
+                        cursor_h.execute("DELETE FROM horario")
 
-                        {"id": 5, "hora": "10:20 am - 11:05 am", "turno": "matutino", "es_pausa": False},
+                        docentes_ocupados = set()
+                        secciones_ocupadas = set()
+                        cargas_lista = list(cargas_raw)
+                        random.shuffle(cargas_lista)
 
-                        {"id": 6, "hora": "11:05 am - 11:50 am", "turno": "matutino", "es_pausa": False},
+                        intentos_exitosos = 0
+                        cargas_incompletas = []
 
-                        {"id": 7, "hora": "1:00 pm - 1:45 pm", "turno": "vespertino", "es_pausa": False},
+                        for c_id, doc_id, sec_id, mat_id, hrs_sem, turno, dias_mat, dias_vesp in cargas_lista:
+                            horas_pendientes = hrs_sem
+                            slots = slots_permitidos(turno, dias_mat, dias_vesp)
+                            random.shuffle(slots)
 
-                        {"id": 8, "hora": "1:45 pm - 2:30 pm", "turno": "vespertino", "es_pausa": False},
-
-                        {"id": 9, "hora": "2:40 pm - 3:25 pm", "turno": "vespertino", "es_pausa": False},
-
-                        {"id": 10, "hora": "3:25 pm - 4:10 pm", "turno": "vespertino", "es_pausa": False},
-
-                        {"id": 11, "hora": "4:20 pm - 5:10 pm", "turno": "vespertino", "es_pausa": False},
-
-                        {"id": 12, "hora": "5:10 pm - 5:50 pm", "turno": "vespertino", "es_pausa": False},
-
-                    ]
-
-                    DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-
-                    parejas_naturales = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]
-
-                    docentes_ocupados = set()
-
-                    secciones_ocupadas = set()
-
-                    cargas_lista = list(cargas_raw)
-
-                    random.shuffle(cargas_lista)
-
-                    for c_id, doc_id, sec_id, mat_id, hrs_sem in cargas_lista:
-
-                        horas_pendientes = hrs_sem
-
-                        for dia in DIAS_SEMANA:
-
-                            if horas_pendientes < 2:
-                                break
-
-                            for id1, id2 in parejas_naturales:
-
+                            # 1) Asignar bloques completos: siempre 2 medios bloques seguidos
+                            for dia, (id1, id2) in slots:
                                 if horas_pendientes < 2:
                                     break
 
                                 b1 = next((b for b in MEDIOS_BLOQUES if b["id"] == id1), None)
-
                                 b2 = next((b for b in MEDIOS_BLOQUES if b["id"] == id2), None)
-
                                 if not b1 or not b2:
                                     continue
 
-                                c_doc1, c_doc2 = (doc_id, dia, b1["id"]), (doc_id, dia, b2["id"])
+                                c_doc1, c_doc2 = (doc_id, dia, id1), (doc_id, dia, id2)
+                                c_sec1, c_sec2 = (sec_id, dia, id1), (sec_id, dia, id2)
 
-                                c_sec1, c_sec2 = (sec_id, dia, b1["id"]), (sec_id, dia, b2["id"])
-
-                                if (c_doc1 not in docentes_ocupados and c_doc2 not in docentes_ocupados and
-
+                                if (
+                                        c_doc1 not in docentes_ocupados and c_doc2 not in docentes_ocupados and
                                         c_sec1 not in secciones_ocupadas and c_sec2 not in secciones_ocupadas):
 
                                     for bloq in [b1, b2]:
                                         cursor_h.execute(
-
                                             "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto) VALUES (?, ?, ?, ?, ?, ?)",
-
                                             (sec_id, doc_id, mat_id, dia, bloq["id"], bloq["hora"])
-
                                         )
-
                                         docentes_ocupados.add((doc_id, dia, bloq["id"]))
-
                                         secciones_ocupadas.add((sec_id, dia, bloq["id"]))
-
                                     horas_pendientes -= 2
+                                    intentos_exitosos += 1
 
-                    conn_h.commit()
+                            # 2) Si sobra 1 medio bloque suelto (horas impares), asignarlo aparte
+                            if horas_pendientes == 1:
+                                medios_sueltos = [(dia, i) for dia, par in slots for i in par]
+                                random.shuffle(medios_sueltos)
+                                for dia, id_suelto in medios_sueltos:
+                                    b = next((x for x in MEDIOS_BLOQUES if x["id"] == id_suelto), None)
+                                    if not b:
+                                        continue
+                                    c_doc, c_sec = (doc_id, dia, id_suelto), (sec_id, dia, id_suelto)
+                                    if c_doc not in docentes_ocupados and c_sec not in secciones_ocupadas:
+                                        cursor_h.execute(
+                                            "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto) VALUES (?, ?, ?, ?, ?, ?)",
+                                            (sec_id, doc_id, mat_id, dia, b["id"], b["hora"])
+                                        )
+                                        docentes_ocupados.add(c_doc)
+                                        secciones_ocupadas.add(c_sec)
+                                        horas_pendientes -= 1
+                                        intentos_exitosos += 1
+                                        break
 
-                    st.success("🎉 ¡Horarios generados y distribuidos globalmente con éxito!")
+                            if horas_pendientes > 0:
+                                cargas_incompletas.append((doc_id, sec_id, horas_pendientes))
 
-                    st.rerun()
-
+                        conn_h.commit()
+                        st.success(
+                            f"🎉 ¡Generación finalizada! Se insertaron {intentos_exitosos} bloques horarios en la base de datos.")
+                        if cargas_incompletas:
+                            st.warning(
+                                f"⚠️ {len(cargas_incompletas)} carga(s) académica(s) no se pudieron completar del todo: "
+                                f"no había suficientes espacios disponibles dentro del turno/días permitidos de ese docente. "
+                                f"Revisa si tiene demasiadas horas asignadas para su turno.")
+                        st.rerun()
                 st.divider()
 
                 # Visualizador en Cuadrícula debajo del botón
-
-                cursor_h.execute("SELECT id, nombre FROM seccion")
-
+                cursor_h.execute("SELECT id, nombre FROM seccion ORDER BY nombre")
                 secs_db = cursor_h.fetchall()
 
-                secs_nombres = [r[1] for r in secs_db]
+                if secs_db:
+                    # Crear diccionario y lista limpios basados estrictamente en la BD
+                    mapa_secs = {str(r[1]): r[0] for r in secs_db}
+                    secs_nombres = list(mapa_secs.keys())
 
-                mapa_secs = {r[1]: r[0] for r in secs_db}
+                    sec_ids_ordenados = [r[0] for r in secs_db]
 
-                if secs_nombres:
+                    if "sec_vis_seleccionada_id" not in st.session_state or \
+                            st.session_state["sec_vis_seleccionada_id"] not in sec_ids_ordenados:
+                        st.session_state["sec_vis_seleccionada_id"] = sec_ids_ordenados[0]
+
+                    idx_actual = sec_ids_ordenados.index(st.session_state["sec_vis_seleccionada_id"])
 
                     sec_elegida = st.selectbox("Seleccionar Sección a Consultar", secs_nombres,
+                                               index=idx_actual,
                                                key="select_vis_sec_unificado")
-
                     sec_id_sel = mapa_secs[sec_elegida]
+                    st.session_state["sec_vis_seleccionada_id"] = sec_id_sel
 
                     MEDIOS_BLOQUES_VIS = [
-
                         {"id": 1, "hora": "7:00 am - 7:45 am", "es_pausa": False},
-
                         {"id": 2, "hora": "7:45 am - 8:30 am", "es_pausa": False},
-
                         {"id": 991, "hora": "8:30 am - 8:40 am", "es_pausa": True, "tipo": "☕ RECESO"},
-
                         {"id": 3, "hora": "8:40 am - 9:25 am", "es_pausa": False},
-
                         {"id": 4, "hora": "9:25 am - 10:10 am", "es_pausa": False},
-
                         {"id": 992, "hora": "10:10 am - 10:20 am", "es_pausa": True, "tipo": "☕ RECESO"},
-
                         {"id": 5, "hora": "10:20 am - 11:05 am", "es_pausa": False},
-
                         {"id": 6, "hora": "11:05 am - 11:50 am", "es_pausa": False},
-
                         {"id": 993, "hora": "11:50 am - 1:00 pm", "es_pausa": True, "tipo": "🍽️ ALMUERZO"},
-
                         {"id": 7, "hora": "1:00 pm - 1:45 pm", "es_pausa": False},
-
                         {"id": 8, "hora": "1:45 pm - 2:30 pm", "es_pausa": False},
-
                         {"id": 994, "hora": "2:30 pm - 2:40 pm", "es_pausa": True, "tipo": "☕ RECESO"},
-
                         {"id": 9, "hora": "2:40 pm - 3:25 pm", "es_pausa": False},
-
                         {"id": 10, "hora": "3:25 pm - 4:10 pm", "es_pausa": False},
-
                         {"id": 995, "hora": "4:10 pm - 4:20 pm", "es_pausa": True, "tipo": "☕ RECESO"},
-
                         {"id": 11, "hora": "4:20 pm - 5:10 pm", "es_pausa": False},
-
                         {"id": 12, "hora": "5:10 pm - 5:50 pm", "es_pausa": False},
-
                     ]
 
                     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-
                     tabla_matriz = []
 
                     for b in MEDIOS_BLOQUES_VIS:
-
                         fila = {"Hora / Bloque": b["hora"]}
-
                         if b["es_pausa"]:
-
                             for d in dias_semana:
                                 fila[d] = b["tipo"]
-
                         else:
-
                             for d in dias_semana:
-
                                 cursor_h.execute("""
-
                                                  SELECT m.nombre, doc.nombre
-
                                                  FROM horario h
-
                                                           JOIN materia m ON h.materia_id = m.id
-
                                                           JOIN docente doc ON h.docente_id = doc.id
-
                                                  WHERE h.seccion_id = ?
                                                    AND h.dia = ?
                                                    AND h.bloque_id = ?
-
                                                  """, (sec_id_sel, d, b["id"]))
-
                                 res = cursor_h.fetchone()
-
                                 if res:
-
                                     fila[d] = f"{res[0]}\n({res[1]})"
-
                                 else:
-
                                     fila[d] = "-"
-
                         tabla_matriz.append(fila)
 
                     df_final_matriz = pd.DataFrame(tabla_matriz)
 
                     st.markdown(f"##### Vista de Horario en Cuadrícula: **{sec_elegida}**")
-
-                    st.dataframe(df_final_matriz, use_container_width=True, hide_index=True)
-
+                    st.dataframe(df_final_matriz, width='stretch', hide_index=True)
                 else:
-
                     st.info("No hay secciones creadas para visualizar.")
-
             conn_h.close()
 
         except Exception as ex:
-
             st.error(f"Error operando el módulo de horarios: {ex}")
 
         st.stop()
 
-    elif st.session_state['admin_view'] == 'asistencia':
-        if st.button("⬅️ Volver al Panel Principal NEXUS", key="btn_back_from_asistencia_view"):
-            st.session_state['admin_view'] = 'dashboard'
-            st.rerun()
-        st.divider()
-
+elif st.session_state['admin_view'] == 'asistencia':
+    if st.button("⬅️ Volver al Panel Principal NEXUS", key="btn_back_from_asistencia_view"):
+        st.session_state['admin_view'] = 'dashboard'
+        st.rerun()
+    st.divider()
 # -----------------------------------------------------------------------------
 # 3. PESTAÑAS DEL MÓDULO DE ASISTENCIA (DOCENTES Y ADMIN)
 # -----------------------------------------------------------------------------
@@ -865,7 +922,7 @@ if "🎓 Carga y Gestión de Estudiantes" in available_tabs:
                 uploaded_file = st.file_uploader("3. Seleccionar archivo Excel (.xlsx)", type=["xlsx", "xls"],
                                                  key="excel_file_uploader_input")
 
-                if st.button("🚀 Cargar e Importar Alumnos", type="primary", use_container_width=True,
+                if st.button("🚀 Cargar e Importar Alumnos", type="primary", width='stretch',
                              key="btn_import_excel_action"):
                     if uploaded_file is not None and lista_secciones != ["Sin Secciones Creadas en Horarios"]:
                         try:
@@ -940,7 +997,7 @@ if "🎓 Carga y Gestión de Estudiantes" in available_tabs:
                     manual_orientador = st.selectbox("Docente Orientador Asignado", lista_docentes_horarios,
                                                      key="sb_manual_reg_orientador")
 
-                    submit_manual = st.form_submit_button("➕ Registrar Estudiante Individual", use_container_width=True)
+                    submit_manual = st.form_submit_button("➕ Registrar Estudiante Individual", width='stretch')
 
                     if submit_manual:
                         if manual_nie.strip() and manual_nombre.strip():
@@ -1024,12 +1081,12 @@ if "🎓 Carga y Gestión de Estudiantes" in available_tabs:
                         })
 
                     df_display = pd.DataFrame(datos_tabla)
-                    st.dataframe(df_display, use_container_width=True, height=250)
+                    st.dataframe(df_display, width='stretch', height=250)
 
                 st.divider()
 
                 if st.button("🗑️ Borrar Todos los Estudiantes", type="secondary", key="btn_clear_all_students_confirm",
-                             use_container_width=True):
+                             width='stretch'):
                     try:
                         conn_db = sqlite3.connect("student_monitor.db")
                         cursor_db = conn_db.cursor()
@@ -1061,7 +1118,7 @@ if "🎓 Carga y Gestión de Estudiantes" in available_tabs:
                         nueva_pass_ind = st.text_input("Nueva Contraseña", type="password",
                                                        key="txt_nueva_pass_individual")
 
-                        if st.button("💾 Actualizar Contraseña Alumno", use_container_width=True,
+                        if st.button("💾 Actualizar Contraseña Alumno", width='stretch',
                                      key="btn_update_single_pass"):
                             if nueva_pass_ind.strip():
                                 usr_al = session.query(User).filter_by(username=str(nie_elegido)).first()
@@ -1085,7 +1142,7 @@ if "🎓 Carga y Gestión de Estudiantes" in available_tabs:
                     nueva_pass_masiva = st.text_input("Contraseña para el Cambio Masivo", type="password",
                                                       key="txt_nueva_pass_masiva")
 
-                    if st.button("⚠️ Aplicar Contraseña a Todos", type="secondary", use_container_width=True,
+                    if st.button("⚠️ Aplicar Contraseña a Todos", type="secondary", width='stretch',
                                  key="btn_reset_all_passwords"):
                         if nueva_pass_masiva.strip():
                             try:
@@ -1260,7 +1317,7 @@ if "📝 Gestión de Permisos" in available_tabs:
                 )
 
                 btn_guardar_permiso = st.form_submit_button("🚀 Registrar Permiso y Generar Asistencias Automáticas",
-                                                            use_container_width=True)
+                                                            width='stretch')
 
                 if btn_guardar_permiso:
                     if fecha_inicio > fecha_fin:
@@ -1321,7 +1378,7 @@ if "📝 Gestión de Permisos" in available_tabs:
                 })
 
             df_hp = pd.DataFrame(datos_hist_perm)
-            st.dataframe(df_hp, use_container_width=True, height=200)
+            st.dataframe(df_hp, width='stretch', height=200)
         else:
             st.info("ℹ️ No hay permisos ni observaciones registradas para este estudiante actualmente.")
 # -------------------------------------------------------------
@@ -1345,7 +1402,7 @@ if "👨‍🏫 Carga y Gestión de Docentes" in available_tabs:
                                                    key="txt_pass_doc_tab")
 
                     btn_crear_doc = st.form_submit_button("➕ Crear / Actualizar Cuenta de Docente",
-                                                          use_container_width=True)
+                                                          width='stretch')
 
                     if btn_crear_doc:
                         if nuevo_user_doc.strip() and docente_seleccionado_reg != "Sin Docentes Creados en Horarios":
@@ -1407,7 +1464,7 @@ if "👨‍🏫 Carga y Gestión de Docentes" in available_tabs:
                             "Sección Asignada": d.assigned_section if d.assigned_section else "Ninguna"
                         })
                     df_docentes_display = pd.DataFrame(datos_docentes)
-                    st.dataframe(df_docentes_display, use_container_width=True, height=250)
+                    st.dataframe(df_docentes_display, width='stretch', height=250)
                 else:
                     st.info("No hay cuentas de docentes creadas todavía.")
 
@@ -1422,7 +1479,7 @@ if "👨‍🏫 Carga y Gestión de Docentes" in available_tabs:
                                                           key="sb_docente_eliminar")
                     username_a_borrar = mapa_docentes_del[docente_a_borrar_label]
 
-                    if st.button("🗑️ Borrar Docente Seleccionado", type="secondary", use_container_width=True,
+                    if st.button("🗑️ Borrar Docente Seleccionado", type="secondary", width='stretch',
                                  key="btn_delete_single_docente"):
                         try:
                             doc_obj = session.query(User).filter_by(username=username_a_borrar, role="Docente").first()
@@ -1453,7 +1510,7 @@ if "👨‍🏫 Carga y Gestión de Docentes" in available_tabs:
                     nueva_pass_docente = st.text_input("Nueva Contraseña para el Docente", type="password",
                                                        key="txt_nueva_pass_docente_mod")
 
-                    if st.button("💾 Actualizar Contraseña Docente", use_container_width=True,
+                    if st.button("💾 Actualizar Contraseña Docente", width='stretch',
                                  key="btn_update_docente_pass"):
                         if nueva_pass_docente.strip():
                             doc_usr = session.query(User).filter_by(username=username_pass, role="Docente").first()
