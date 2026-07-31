@@ -318,6 +318,12 @@ if current_user.role == "Admin":
                 conn_h.commit()
             except Exception:
                 pass
+
+            try:
+                cursor_h.execute("ALTER TABLE horario ADD COLUMN origen TEXT DEFAULT 'generado';")
+                conn_h.commit()
+            except Exception:
+                pass
             # ------------------------------------------------------------------------
 
             # Reducido a 4 pestañas limpias y funcionales
@@ -626,229 +632,420 @@ if current_user.role == "Admin":
 
                 st.markdown("#### ⚡ Panel de Generación y Visualización de Horarios")
 
-                # Botón de Generación Integrado Arriba
-                if st.button("🚀 Ejecutar Generador Global de Horarios", type="primary",
-                             width='stretch',
-                             key="btn_ejecutar_gen_global_h4"):
+                # --- DEFINICIONES COMPARTIDAS (usadas por ambas sub-pestañas) ---
+                MEDIOS_BLOQUES = [
+                    {"id": 1, "hora": "7:00 am - 7:45 am"},
+                    {"id": 2, "hora": "7:45 am - 8:30 am"},
+                    {"id": 3, "hora": "8:40 am - 9:25 am"},
+                    {"id": 4, "hora": "9:25 am - 10:10 am"},
+                    {"id": 5, "hora": "10:20 am - 11:05 am"},
+                    {"id": 6, "hora": "11:05 am - 11:50 am"},
+                    {"id": 7, "hora": "1:00 pm - 1:45 pm"},
+                    {"id": 8, "hora": "1:45 pm - 2:30 pm"},
+                    {"id": 9, "hora": "2:40 pm - 3:25 pm"},
+                    {"id": 10, "hora": "3:25 pm - 4:10 pm"},
+                    {"id": 11, "hora": "4:20 pm - 5:10 pm"},
+                    {"id": 12, "hora": "5:10 pm - 5:50 pm"},
+                ]
 
-                    # --- CONSULTAR CARGAS ACADÉMICAS + TURNO Y DÍAS DEL DOCENTE ---
-                    cursor_h.execute("""
-                        SELECT ca.id, ca.docente_id, ca.seccion_id, ca.materia_id, ca.horas_semanales,
-                               d.turno_preferente, d.dias_matutino, d.dias_vespertino
-                        FROM cargaacademica ca
-                        JOIN docente d ON ca.docente_id = d.id
-                    """)
-                    cargas_raw = cursor_h.fetchall()
+                MEDIOS_BLOQUES_VIS = [
+                    {"id": 1, "hora": "7:00 am - 7:45 am", "es_pausa": False},
+                    {"id": 2, "hora": "7:45 am - 8:30 am", "es_pausa": False},
+                    {"id": 991, "hora": "8:30 am - 8:40 am", "es_pausa": True, "tipo": "☕ RECESO"},
+                    {"id": 3, "hora": "8:40 am - 9:25 am", "es_pausa": False},
+                    {"id": 4, "hora": "9:25 am - 10:10 am", "es_pausa": False},
+                    {"id": 992, "hora": "10:10 am - 10:20 am", "es_pausa": True, "tipo": "☕ RECESO"},
+                    {"id": 5, "hora": "10:20 am - 11:05 am", "es_pausa": False},
+                    {"id": 6, "hora": "11:05 am - 11:50 am", "es_pausa": False},
+                    {"id": 993, "hora": "11:50 am - 1:00 pm", "es_pausa": True, "tipo": "🍽️ ALMUERZO"},
+                    {"id": 7, "hora": "1:00 pm - 1:45 pm", "es_pausa": False},
+                    {"id": 8, "hora": "1:45 pm - 2:30 pm", "es_pausa": False},
+                    {"id": 994, "hora": "2:30 pm - 2:40 pm", "es_pausa": True, "tipo": "☕ RECESO"},
+                    {"id": 9, "hora": "2:40 pm - 3:25 pm", "es_pausa": False},
+                    {"id": 10, "hora": "3:25 pm - 4:10 pm", "es_pausa": False},
+                    {"id": 995, "hora": "4:10 pm - 4:20 pm", "es_pausa": True, "tipo": "☕ RECESO"},
+                    {"id": 11, "hora": "4:20 pm - 5:10 pm", "es_pausa": False},
+                    {"id": 12, "hora": "5:10 pm - 5:50 pm", "es_pausa": False},
+                ]
 
-                    # --- DIAGNÓSTICO Y VALIDACIÓN ---
-                    if not cargas_raw:
-                        st.warning(
-                            "⚠️ La tabla `cargaacademica` está completamente vacía. Primero debes registrar cargas académicas a los docentes.")
-                    else:
-                        MEDIOS_BLOQUES = [
-                            {"id": 1, "hora": "7:00 am - 7:45 am"},
-                            {"id": 2, "hora": "7:45 am - 8:30 am"},
-                            {"id": 3, "hora": "8:40 am - 9:25 am"},
-                            {"id": 4, "hora": "9:25 am - 10:10 am"},
-                            {"id": 5, "hora": "10:20 am - 11:05 am"},
-                            {"id": 6, "hora": "11:05 am - 11:50 am"},
-                            {"id": 7, "hora": "1:00 pm - 1:45 pm"},
-                            {"id": 8, "hora": "1:45 pm - 2:30 pm"},
-                            {"id": 9, "hora": "2:40 pm - 3:25 pm"},
-                            {"id": 10, "hora": "3:25 pm - 4:10 pm"},
-                            {"id": 11, "hora": "4:20 pm - 5:10 pm"},
-                            {"id": 12, "hora": "5:10 pm - 5:50 pm"},
-                        ]
+                DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+                # Bloques matutinos (7:00 am - 12:00 pm) y vespertinos (1:00 pm - 5:50 pm)
+                # agrupados en parejas: cada pareja = 2 medios bloques seguidos = 1 bloque completo.
+                PAREJAS_MATUTINO = [(1, 2), (3, 4), (5, 6)]
+                PAREJAS_VESPERTINO = [(7, 8), (9, 10), (11, 12)]
 
-                        DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-                        # Bloques matutinos (7:00 am - 12:00 pm) y vespertinos (1:00 pm - 5:50 pm)
-                        # agrupados en parejas: cada pareja = 2 medios bloques seguidos = 1 bloque completo.
-                        PAREJAS_MATUTINO = [(1, 2), (3, 4), (5, 6)]
-                        PAREJAS_VESPERTINO = [(7, 8), (9, 10), (11, 12)]
+                import random
 
-                        import random
+                def slots_permitidos(turno, dias_mat_str, dias_vesp_str):
+                    """Devuelve la lista de (dia, (id1, id2)) que un docente puede usar
+                    según su turno preferente y, si aplica, sus días personalizados."""
+                    dias_mat_str = dias_mat_str or ""
+                    dias_vesp_str = dias_vesp_str or ""
+                    slots = []
+                    if turno == "Matutino":
+                        for d in DIAS_SEMANA:
+                            for p in PAREJAS_MATUTINO:
+                                slots.append((d, p))
+                    elif turno == "Vespertino":
+                        for d in DIAS_SEMANA:
+                            for p in PAREJAS_VESPERTINO:
+                                slots.append((d, p))
+                    elif turno == "Doble Turno":
+                        for d in DIAS_SEMANA:
+                            for p in PAREJAS_MATUTINO + PAREJAS_VESPERTINO:
+                                slots.append((d, p))
+                    elif turno == "Horario Accesible":
+                        dias_mat = [x.strip() for x in dias_mat_str.split(",") if x.strip()]
+                        dias_vesp = [x.strip() for x in dias_vesp_str.split(",") if x.strip()]
+                        for d in dias_mat:
+                            for p in PAREJAS_MATUTINO:
+                                slots.append((d, p))
+                        for d in dias_vesp:
+                            for p in PAREJAS_VESPERTINO:
+                                slots.append((d, p))
+                    return slots
 
-                        def slots_permitidos(turno, dias_mat_str, dias_vesp_str):
-                            """Devuelve la lista de (dia, (id1, id2)) que un docente puede usar
-                            según su turno preferente y, si aplica, sus días personalizados."""
-                            dias_mat_str = dias_mat_str or ""
-                            dias_vesp_str = dias_vesp_str or ""
-                            slots = []
-                            if turno == "Matutino":
-                                for d in DIAS_SEMANA:
-                                    for p in PAREJAS_MATUTINO:
-                                        slots.append((d, p))
-                            elif turno == "Vespertino":
-                                for d in DIAS_SEMANA:
-                                    for p in PAREJAS_VESPERTINO:
-                                        slots.append((d, p))
-                            elif turno == "Doble Turno":
-                                for d in DIAS_SEMANA:
-                                    for p in PAREJAS_MATUTINO + PAREJAS_VESPERTINO:
-                                        slots.append((d, p))
-                            elif turno == "Horario Accesible":
-                                dias_mat = [x.strip() for x in dias_mat_str.split(",") if x.strip()]
-                                dias_vesp = [x.strip() for x in dias_vesp_str.split(",") if x.strip()]
-                                for d in dias_mat:
-                                    for p in PAREJAS_MATUTINO:
-                                        slots.append((d, p))
-                                for d in dias_vesp:
-                                    for p in PAREJAS_VESPERTINO:
-                                        slots.append((d, p))
-                            return slots
+                sub_tab_sec, sub_tab_doc = st.tabs(
+                    ["🏫 Generador y Vista por Sección", "👨‍🏫 Vista y Edición por Docente"])
 
-                        # --- REGENERACIÓN GLOBAL: se limpia el horario anterior antes de crear el nuevo ---
-                        cursor_h.execute("DELETE FROM horario")
+                # =====================================================================
+                # SUB-PESTAÑA 1: GENERADOR Y VISTA POR SECCIÓN
+                # =====================================================================
+                with sub_tab_sec:
 
-                        docentes_ocupados = set()
-                        secciones_ocupadas = set()
-                        cargas_lista = list(cargas_raw)
-                        random.shuffle(cargas_lista)
+                    if st.button("🚀 Ejecutar Generador Global de Horarios", type="primary",
+                                 width='stretch',
+                                 key="btn_ejecutar_gen_global_h4"):
 
-                        intentos_exitosos = 0
-                        cargas_incompletas = []
+                        # --- CONSULTAR CARGAS ACADÉMICAS + TURNO Y DÍAS DEL DOCENTE ---
+                        cursor_h.execute("""
+                            SELECT ca.id, ca.docente_id, ca.seccion_id, ca.materia_id, ca.horas_semanales,
+                                   d.turno_preferente, d.dias_matutino, d.dias_vespertino
+                            FROM cargaacademica ca
+                            JOIN docente d ON ca.docente_id = d.id
+                        """)
+                        cargas_raw = cursor_h.fetchall()
 
-                        for c_id, doc_id, sec_id, mat_id, hrs_sem, turno, dias_mat, dias_vesp in cargas_lista:
-                            horas_pendientes = hrs_sem
-                            slots = slots_permitidos(turno, dias_mat, dias_vesp)
-                            random.shuffle(slots)
+                        if not cargas_raw:
+                            st.warning(
+                                "⚠️ La tabla `cargaacademica` está completamente vacía. Primero debes registrar cargas académicas a los docentes.")
+                        else:
+                            # --- LOS BLOQUES MARCADOS COMO 'manual' SE RESPETAN Y NUNCA SE BORRAN ---
+                            cursor_h.execute(
+                                "SELECT seccion_id, docente_id, materia_id, dia, bloque_id FROM horario WHERE origen = 'manual'")
+                            bloques_manuales = cursor_h.fetchall()
 
-                            # 1) Asignar bloques completos: siempre 2 medios bloques seguidos
-                            for dia, (id1, id2) in slots:
-                                if horas_pendientes < 2:
-                                    break
+                            docentes_ocupados = set()
+                            secciones_ocupadas = set()
+                            horas_ya_cubiertas = {}
 
-                                b1 = next((b for b in MEDIOS_BLOQUES if b["id"] == id1), None)
-                                b2 = next((b for b in MEDIOS_BLOQUES if b["id"] == id2), None)
-                                if not b1 or not b2:
+                            for sec_id_m, doc_id_m, mat_id_m, dia_m, bloque_id_m in bloques_manuales:
+                                docentes_ocupados.add((doc_id_m, dia_m, bloque_id_m))
+                                secciones_ocupadas.add((sec_id_m, dia_m, bloque_id_m))
+                                clave_m = (doc_id_m, sec_id_m, mat_id_m)
+                                horas_ya_cubiertas[clave_m] = horas_ya_cubiertas.get(clave_m, 0) + 1
+
+                            # --- SOLO SE BORRAN LOS BLOQUES GENERADOS AUTOMÁTICAMENTE ---
+                            cursor_h.execute("DELETE FROM horario WHERE origen != 'manual' OR origen IS NULL")
+
+                            cargas_lista = list(cargas_raw)
+                            random.shuffle(cargas_lista)
+
+                            intentos_exitosos = 0
+                            cargas_incompletas = []
+                            avisos_manuales = []
+
+                            for c_id, doc_id, sec_id, mat_id, hrs_sem, turno, dias_mat, dias_vesp in cargas_lista:
+                                clave = (doc_id, sec_id, mat_id)
+                                ya_cubiertas = horas_ya_cubiertas.get(clave, 0)
+                                horas_pendientes = hrs_sem - ya_cubiertas
+
+                                if ya_cubiertas > hrs_sem:
+                                    avisos_manuales.append(
+                                        f"Carga #{c_id}: tiene {ya_cubiertas} medios bloques asignados manualmente, "
+                                        f"más que sus {hrs_sem} horas semanales de carga. Revísala manualmente.")
+                                    horas_pendientes = 0
+
+                                if horas_pendientes <= 0:
                                     continue
 
-                                c_doc1, c_doc2 = (doc_id, dia, id1), (doc_id, dia, id2)
-                                c_sec1, c_sec2 = (sec_id, dia, id1), (sec_id, dia, id2)
+                                slots = slots_permitidos(turno, dias_mat, dias_vesp)
+                                random.shuffle(slots)
 
-                                if (
-                                        c_doc1 not in docentes_ocupados and c_doc2 not in docentes_ocupados and
-                                        c_sec1 not in secciones_ocupadas and c_sec2 not in secciones_ocupadas):
-
-                                    for bloq in [b1, b2]:
-                                        cursor_h.execute(
-                                            "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto) VALUES (?, ?, ?, ?, ?, ?)",
-                                            (sec_id, doc_id, mat_id, dia, bloq["id"], bloq["hora"])
-                                        )
-                                        docentes_ocupados.add((doc_id, dia, bloq["id"]))
-                                        secciones_ocupadas.add((sec_id, dia, bloq["id"]))
-                                    horas_pendientes -= 2
-                                    intentos_exitosos += 1
-
-                            # 2) Si sobra 1 medio bloque suelto (horas impares), asignarlo aparte
-                            if horas_pendientes == 1:
-                                medios_sueltos = [(dia, i) for dia, par in slots for i in par]
-                                random.shuffle(medios_sueltos)
-                                for dia, id_suelto in medios_sueltos:
-                                    b = next((x for x in MEDIOS_BLOQUES if x["id"] == id_suelto), None)
-                                    if not b:
-                                        continue
-                                    c_doc, c_sec = (doc_id, dia, id_suelto), (sec_id, dia, id_suelto)
-                                    if c_doc not in docentes_ocupados and c_sec not in secciones_ocupadas:
-                                        cursor_h.execute(
-                                            "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto) VALUES (?, ?, ?, ?, ?, ?)",
-                                            (sec_id, doc_id, mat_id, dia, b["id"], b["hora"])
-                                        )
-                                        docentes_ocupados.add(c_doc)
-                                        secciones_ocupadas.add(c_sec)
-                                        horas_pendientes -= 1
-                                        intentos_exitosos += 1
+                                # 1) Asignar bloques completos: siempre 2 medios bloques seguidos
+                                for dia, (id1, id2) in slots:
+                                    if horas_pendientes < 2:
                                         break
 
-                            if horas_pendientes > 0:
-                                cargas_incompletas.append((doc_id, sec_id, horas_pendientes))
+                                    b1 = next((b for b in MEDIOS_BLOQUES if b["id"] == id1), None)
+                                    b2 = next((b for b in MEDIOS_BLOQUES if b["id"] == id2), None)
+                                    if not b1 or not b2:
+                                        continue
 
-                        conn_h.commit()
-                        st.success(
-                            f"🎉 ¡Generación finalizada! Se insertaron {intentos_exitosos} bloques horarios en la base de datos.")
-                        if cargas_incompletas:
-                            st.warning(
-                                f"⚠️ {len(cargas_incompletas)} carga(s) académica(s) no se pudieron completar del todo: "
-                                f"no había suficientes espacios disponibles dentro del turno/días permitidos de ese docente. "
-                                f"Revisa si tiene demasiadas horas asignadas para su turno.")
-                        st.rerun()
-                st.divider()
+                                    c_doc1, c_doc2 = (doc_id, dia, id1), (doc_id, dia, id2)
+                                    c_sec1, c_sec2 = (sec_id, dia, id1), (sec_id, dia, id2)
 
-                # Visualizador en Cuadrícula debajo del botón
-                cursor_h.execute("SELECT id, nombre FROM seccion ORDER BY nombre")
-                secs_db = cursor_h.fetchall()
+                                    if (
+                                            c_doc1 not in docentes_ocupados and c_doc2 not in docentes_ocupados and
+                                            c_sec1 not in secciones_ocupadas and c_sec2 not in secciones_ocupadas):
 
-                if secs_db:
-                    # Crear diccionario y lista limpios basados estrictamente en la BD
-                    mapa_secs = {str(r[1]): r[0] for r in secs_db}
-                    secs_nombres = list(mapa_secs.keys())
+                                        for bloq in [b1, b2]:
+                                            cursor_h.execute(
+                                                "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto, origen) VALUES (?, ?, ?, ?, ?, ?, 'generado')",
+                                                (sec_id, doc_id, mat_id, dia, bloq["id"], bloq["hora"])
+                                            )
+                                            docentes_ocupados.add((doc_id, dia, bloq["id"]))
+                                            secciones_ocupadas.add((sec_id, dia, bloq["id"]))
+                                        horas_pendientes -= 2
+                                        intentos_exitosos += 1
 
-                    sec_ids_ordenados = [r[0] for r in secs_db]
+                                # 2) Si sobra 1 medio bloque suelto (horas impares), asignarlo aparte
+                                if horas_pendientes == 1:
+                                    medios_sueltos = [(dia, i) for dia, par in slots for i in par]
+                                    random.shuffle(medios_sueltos)
+                                    for dia, id_suelto in medios_sueltos:
+                                        b = next((x for x in MEDIOS_BLOQUES if x["id"] == id_suelto), None)
+                                        if not b:
+                                            continue
+                                        c_doc, c_sec = (doc_id, dia, id_suelto), (sec_id, dia, id_suelto)
+                                        if c_doc not in docentes_ocupados and c_sec not in secciones_ocupadas:
+                                            cursor_h.execute(
+                                                "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto, origen) VALUES (?, ?, ?, ?, ?, ?, 'generado')",
+                                                (sec_id, doc_id, mat_id, dia, b["id"], b["hora"])
+                                            )
+                                            docentes_ocupados.add(c_doc)
+                                            secciones_ocupadas.add(c_sec)
+                                            horas_pendientes -= 1
+                                            intentos_exitosos += 1
+                                            break
 
-                    if "sec_vis_seleccionada_id" not in st.session_state or \
-                            st.session_state["sec_vis_seleccionada_id"] not in sec_ids_ordenados:
-                        st.session_state["sec_vis_seleccionada_id"] = sec_ids_ordenados[0]
+                                if horas_pendientes > 0:
+                                    cargas_incompletas.append((doc_id, sec_id, horas_pendientes))
 
-                    idx_actual = sec_ids_ordenados.index(st.session_state["sec_vis_seleccionada_id"])
+                            conn_h.commit()
+                            st.success(
+                                f"🎉 ¡Generación finalizada! Se insertaron {intentos_exitosos} bloques horarios nuevos. "
+                                f"Los bloques que habías editado manualmente se conservaron intactos.")
+                            if cargas_incompletas:
+                                st.warning(
+                                    f"⚠️ {len(cargas_incompletas)} carga(s) académica(s) no se pudieron completar del todo: "
+                                    f"no había suficientes espacios disponibles dentro del turno/días permitidos de ese docente. "
+                                    f"Revisa si tiene demasiadas horas asignadas para su turno.")
+                            for aviso in avisos_manuales:
+                                st.warning(f"⚠️ {aviso}")
+                            st.rerun()
+                    st.divider()
 
-                    sec_elegida = st.selectbox("Seleccionar Sección a Consultar", secs_nombres,
-                                               index=idx_actual,
-                                               key="select_vis_sec_unificado")
-                    sec_id_sel = mapa_secs[sec_elegida]
-                    st.session_state["sec_vis_seleccionada_id"] = sec_id_sel
+                    # Visualizador en Cuadrícula debajo del botón
+                    cursor_h.execute("SELECT id, nombre FROM seccion ORDER BY nombre")
+                    secs_db = cursor_h.fetchall()
 
-                    MEDIOS_BLOQUES_VIS = [
-                        {"id": 1, "hora": "7:00 am - 7:45 am", "es_pausa": False},
-                        {"id": 2, "hora": "7:45 am - 8:30 am", "es_pausa": False},
-                        {"id": 991, "hora": "8:30 am - 8:40 am", "es_pausa": True, "tipo": "☕ RECESO"},
-                        {"id": 3, "hora": "8:40 am - 9:25 am", "es_pausa": False},
-                        {"id": 4, "hora": "9:25 am - 10:10 am", "es_pausa": False},
-                        {"id": 992, "hora": "10:10 am - 10:20 am", "es_pausa": True, "tipo": "☕ RECESO"},
-                        {"id": 5, "hora": "10:20 am - 11:05 am", "es_pausa": False},
-                        {"id": 6, "hora": "11:05 am - 11:50 am", "es_pausa": False},
-                        {"id": 993, "hora": "11:50 am - 1:00 pm", "es_pausa": True, "tipo": "🍽️ ALMUERZO"},
-                        {"id": 7, "hora": "1:00 pm - 1:45 pm", "es_pausa": False},
-                        {"id": 8, "hora": "1:45 pm - 2:30 pm", "es_pausa": False},
-                        {"id": 994, "hora": "2:30 pm - 2:40 pm", "es_pausa": True, "tipo": "☕ RECESO"},
-                        {"id": 9, "hora": "2:40 pm - 3:25 pm", "es_pausa": False},
-                        {"id": 10, "hora": "3:25 pm - 4:10 pm", "es_pausa": False},
-                        {"id": 995, "hora": "4:10 pm - 4:20 pm", "es_pausa": True, "tipo": "☕ RECESO"},
-                        {"id": 11, "hora": "4:20 pm - 5:10 pm", "es_pausa": False},
-                        {"id": 12, "hora": "5:10 pm - 5:50 pm", "es_pausa": False},
-                    ]
+                    if secs_db:
+                        mapa_secs = {str(r[1]): r[0] for r in secs_db}
+                        secs_nombres = list(mapa_secs.keys())
+                        sec_ids_ordenados = [r[0] for r in secs_db]
 
-                    dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-                    tabla_matriz = []
+                        if "sec_vis_seleccionada_id" not in st.session_state or \
+                                st.session_state["sec_vis_seleccionada_id"] not in sec_ids_ordenados:
+                            st.session_state["sec_vis_seleccionada_id"] = sec_ids_ordenados[0]
 
-                    for b in MEDIOS_BLOQUES_VIS:
-                        fila = {"Hora / Bloque": b["hora"]}
-                        if b["es_pausa"]:
-                            for d in dias_semana:
-                                fila[d] = b["tipo"]
+                        idx_actual = sec_ids_ordenados.index(st.session_state["sec_vis_seleccionada_id"])
+
+                        sec_elegida = st.selectbox("Seleccionar Sección a Consultar", secs_nombres,
+                                                   index=idx_actual,
+                                                   key="select_vis_sec_unificado")
+                        sec_id_sel = mapa_secs[sec_elegida]
+                        st.session_state["sec_vis_seleccionada_id"] = sec_id_sel
+
+                        dias_semana = DIAS_SEMANA
+                        tabla_matriz = []
+
+                        for b in MEDIOS_BLOQUES_VIS:
+                            fila = {"Hora / Bloque": b["hora"]}
+                            if b["es_pausa"]:
+                                for d in dias_semana:
+                                    fila[d] = b["tipo"]
+                            else:
+                                for d in dias_semana:
+                                    cursor_h.execute("""
+                                                     SELECT m.nombre, doc.nombre, h.origen
+                                                     FROM horario h
+                                                              JOIN materia m ON h.materia_id = m.id
+                                                              JOIN docente doc ON h.docente_id = doc.id
+                                                     WHERE h.seccion_id = ?
+                                                       AND h.dia = ?
+                                                       AND h.bloque_id = ?
+                                                     """, (sec_id_sel, d, b["id"]))
+                                    res = cursor_h.fetchone()
+                                    if res:
+                                        marca = " ✏️" if res[2] == "manual" else ""
+                                        fila[d] = f"{res[0]}\n({res[1]}){marca}"
+                                    else:
+                                        fila[d] = "-"
+                            tabla_matriz.append(fila)
+
+                        df_final_matriz = pd.DataFrame(tabla_matriz)
+
+                        st.markdown(f"##### Vista de Horario en Cuadrícula: **{sec_elegida}**")
+                        st.caption("✏️ = bloque editado manualmente (protegido de la regeneración automática)")
+                        st.dataframe(df_final_matriz, width='stretch', hide_index=True)
+                    else:
+                        st.info("No hay secciones creadas para visualizar.")
+
+                # =====================================================================
+                # SUB-PESTAÑA 2: VISTA Y EDICIÓN MANUAL POR DOCENTE
+                # =====================================================================
+                with sub_tab_doc:
+
+                    cursor_h.execute("SELECT id, nombre FROM docente ORDER BY nombre")
+                    docs_db = cursor_h.fetchall()
+
+                    if not docs_db:
+                        st.info("No hay docentes registrados para visualizar.")
+                    else:
+                        mapa_docs = {str(r[1]): r[0] for r in docs_db}
+                        docs_nombres = list(mapa_docs.keys())
+                        doc_ids_ordenados = [r[0] for r in docs_db]
+
+                        if "doc_vis_seleccionado_id" not in st.session_state or \
+                                st.session_state["doc_vis_seleccionado_id"] not in doc_ids_ordenados:
+                            st.session_state["doc_vis_seleccionado_id"] = doc_ids_ordenados[0]
+
+                        idx_doc_actual = doc_ids_ordenados.index(st.session_state["doc_vis_seleccionado_id"])
+
+                        doc_elegido = st.selectbox("Seleccionar Docente a Consultar", docs_nombres,
+                                                   index=idx_doc_actual,
+                                                   key="select_vis_doc_unificado")
+                        doc_id_sel = mapa_docs[doc_elegido]
+                        st.session_state["doc_vis_seleccionado_id"] = doc_id_sel
+
+                        dias_semana = DIAS_SEMANA
+                        tabla_matriz_doc = []
+
+                        for b in MEDIOS_BLOQUES_VIS:
+                            fila = {"Hora / Bloque": b["hora"]}
+                            if b["es_pausa"]:
+                                for d in dias_semana:
+                                    fila[d] = b["tipo"]
+                            else:
+                                for d in dias_semana:
+                                    cursor_h.execute("""
+                                                     SELECT m.nombre, s.nombre, h.origen
+                                                     FROM horario h
+                                                              JOIN materia m ON h.materia_id = m.id
+                                                              JOIN seccion s ON h.seccion_id = s.id
+                                                     WHERE h.docente_id = ?
+                                                       AND h.dia = ?
+                                                       AND h.bloque_id = ?
+                                                     """, (doc_id_sel, d, b["id"]))
+                                    res = cursor_h.fetchone()
+                                    if res:
+                                        marca = " ✏️" if res[2] == "manual" else ""
+                                        fila[d] = f"{res[0]}\n({res[1]}){marca}"
+                                    else:
+                                        fila[d] = "-"
+                            tabla_matriz_doc.append(fila)
+
+                        df_doc_matriz = pd.DataFrame(tabla_matriz_doc)
+
+                        st.markdown(f"##### Vista de Horario en Cuadrícula: **{doc_elegido}**")
+                        st.caption("✏️ = bloque editado manualmente (protegido de la regeneración automática)")
+                        st.dataframe(df_doc_matriz, width='stretch', hide_index=True)
+
+                        st.divider()
+                        st.markdown("##### ✏️ Editar Bloque Manualmente")
+                        st.caption(
+                            "Este cambio se guarda directamente en el horario de secciones y se respeta en futuras regeneraciones.")
+
+                        # Cargas académicas de este docente, para poblar el selector de sección/materia
+                        cursor_h.execute("""
+                            SELECT ca.seccion_id, s.nombre, ca.materia_id, m.nombre
+                            FROM cargaacademica ca
+                            JOIN seccion s ON ca.seccion_id = s.id
+                            JOIN materia m ON ca.materia_id = m.id
+                            WHERE ca.docente_id = ?
+                            ORDER BY s.nombre
+                        """, (doc_id_sel,))
+                        cargas_doc = cursor_h.fetchall()
+
+                        if not cargas_doc:
+                            st.info("Este docente no tiene cargas académicas asignadas todavía.")
                         else:
-                            for d in dias_semana:
-                                cursor_h.execute("""
-                                                 SELECT m.nombre, doc.nombre
-                                                 FROM horario h
-                                                          JOIN materia m ON h.materia_id = m.id
-                                                          JOIN docente doc ON h.docente_id = doc.id
-                                                 WHERE h.seccion_id = ?
-                                                   AND h.dia = ?
-                                                   AND h.bloque_id = ?
-                                                 """, (sec_id_sel, d, b["id"]))
-                                res = cursor_h.fetchone()
-                                if res:
-                                    fila[d] = f"{res[0]}\n({res[1]})"
-                                else:
-                                    fila[d] = "-"
-                        tabla_matriz.append(fila)
+                            col_e1, col_e2 = st.columns(2)
+                            with col_e1:
+                                dia_edit = st.selectbox("Día", DIAS_SEMANA, key="edit_doc_dia")
+                            with col_e2:
+                                opciones_bloque = {f'{b["hora"]}': b["id"] for b in MEDIOS_BLOQUES}
+                                bloque_edit_label = st.selectbox("Bloque", list(opciones_bloque.keys()),
+                                                                  key="edit_doc_bloque")
+                                bloque_edit_id = opciones_bloque[bloque_edit_label]
 
-                    df_final_matriz = pd.DataFrame(tabla_matriz)
+                            # Mostrar qué hay actualmente en ese día/bloque para este docente
+                            cursor_h.execute("""
+                                             SELECT s.nombre, m.nombre
+                                             FROM horario h
+                                                      JOIN seccion s ON h.seccion_id = s.id
+                                                      JOIN materia m ON h.materia_id = m.id
+                                             WHERE h.docente_id = ? AND h.dia = ? AND h.bloque_id = ?
+                                             """, (doc_id_sel, dia_edit, bloque_edit_id))
+                            actual = cursor_h.fetchone()
+                            if actual:
+                                st.info(f"Actualmente en ese bloque: **{actual[1]}** en la sección **{actual[0]}**")
+                            else:
+                                st.info("Ese bloque está libre actualmente para este docente.")
 
-                    st.markdown(f"##### Vista de Horario en Cuadrícula: **{sec_elegida}**")
-                    st.dataframe(df_final_matriz, width='stretch', hide_index=True)
-                else:
-                    st.info("No hay secciones creadas para visualizar.")
+                            accion_edit = st.radio("Acción", ["Asignar / Cambiar sección", "Vaciar este bloque"],
+                                                    key="edit_doc_accion", horizontal=True)
+
+                            if accion_edit == "Asignar / Cambiar sección":
+                                opciones_carga = {
+                                    f"{nombre_sec} — {nombre_mat}": (sec_id_c, mat_id_c)
+                                    for sec_id_c, nombre_sec, mat_id_c, nombre_mat in cargas_doc
+                                }
+                                carga_label = st.selectbox("Sección y materia a asignar",
+                                                           list(opciones_carga.keys()),
+                                                           key="edit_doc_carga_sel")
+                                sec_id_nueva, mat_id_nueva = opciones_carga[carga_label]
+
+                                if st.button("💾 Guardar Cambio", type="primary", key="btn_guardar_edit_doc"):
+                                    # --- REGLA DE ORO: la sección destino no puede tener ya otro docente en ese día/bloque ---
+                                    cursor_h.execute("""
+                                                     SELECT doc.nombre
+                                                     FROM horario h
+                                                              JOIN docente doc ON h.docente_id = doc.id
+                                                     WHERE h.seccion_id = ? AND h.dia = ? AND h.bloque_id = ?
+                                                       AND h.docente_id != ?
+                                                     """, (sec_id_nueva, dia_edit, bloque_edit_id, doc_id_sel))
+                                    choque = cursor_h.fetchone()
+
+                                    if choque:
+                                        st.error(
+                                            f"❌ No se puede guardar: la sección elegida ya tiene clase con **{choque[0]}** "
+                                            f"en ese mismo día y bloque. Elige otro bloque o libera esa sección primero.")
+                                    else:
+                                        hora_texto_edit = next(
+                                            b["hora"] for b in MEDIOS_BLOQUES if b["id"] == bloque_edit_id)
+                                        # Se quita cualquier clase previa de ESTE docente en ese día/bloque
+                                        # (garantiza que nunca quede en 2 secciones a la vez)
+                                        cursor_h.execute(
+                                            "DELETE FROM horario WHERE docente_id = ? AND dia = ? AND bloque_id = ?",
+                                            (doc_id_sel, dia_edit, bloque_edit_id))
+                                        cursor_h.execute(
+                                            "INSERT INTO horario (seccion_id, docente_id, materia_id, dia, bloque_id, hora_texto, origen) VALUES (?, ?, ?, ?, ?, ?, 'manual')",
+                                            (sec_id_nueva, doc_id_sel, mat_id_nueva, dia_edit, bloque_edit_id,
+                                             hora_texto_edit))
+                                        conn_h.commit()
+                                        st.success("✅ Bloque actualizado y marcado como manual.")
+                                        st.rerun()
+                            else:
+                                if st.button("🗑️ Vaciar Bloque", key="btn_vaciar_edit_doc"):
+                                    cursor_h.execute(
+                                        "DELETE FROM horario WHERE docente_id = ? AND dia = ? AND bloque_id = ?",
+                                        (doc_id_sel, dia_edit, bloque_edit_id))
+                                    conn_h.commit()
+                                    st.success("✅ Bloque vaciado.")
+                                    st.rerun()
+
             conn_h.close()
 
         except Exception as ex:
@@ -856,7 +1053,7 @@ if current_user.role == "Admin":
 
         st.stop()
 
-elif st.session_state['admin_view'] == 'asistencia':
+if current_user.role == "Admin" and st.session_state['admin_view'] == 'asistencia':
     if st.button("⬅️ Volver al Panel Principal NEXUS", key="btn_back_from_asistencia_view"):
         st.session_state['admin_view'] = 'dashboard'
         st.rerun()
