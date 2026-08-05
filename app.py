@@ -1,14 +1,20 @@
 import io
+import os
+import secrets
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
 from database import (
     init_db, get_session, Student, Subject, Attendance,
-    CaseTracker, Schedule, Justification, User, calculate_distance
+    CaseTracker, Schedule, Justification, User, calculate_distance, ActaAsistencia,
+    QRAttendanceToken, QRAttendanceCheckin
 )
-from analytics import evaluate_student_risk, get_institutional_semaphore
+from analytics import (
+    evaluate_student_risk, get_institutional_semaphore, evaluate_student_risk_detailed,
+    sugerir_acuerdos_compromisos, get_alertas_docente, sugerir_normativa_aplicable
+)
 from ai_recommender import generate_recommendation, generate_pedagogical_act
 
 # Coordenadas de prueba del Instituto y radio máximo permitido (en metros)
@@ -16,10 +22,423 @@ INSTITUTE_LAT = 13.35054
 INSTITUTE_LON = -88.34890
 MAX_DISTANCE_METERS = 200.0
 
+# --- IMPORTANTE: cambia esto por la URL real donde esté publicada tu app ---
+# Se usa para construir el enlace que se codifica dentro del QR de asistencia.
+# Ejemplos: "https://tu-app.streamlit.app" o "http://192.168.1.50:8501" en tu red local.
+APP_BASE_URL = "http://localhost:8501"
+
+QR_TOKEN_VALIDEZ_MINUTOS = 5
+
 # Módulo de Horarios integrado localmente para la nube
 FASTAPI_HORARIOS_URL = "modo_integrado"
 
-st.set_page_config(page_title="NEXUS", page_icon="🎓", layout="wide")
+
+def generar_acta_asistencia_pdf(session, estudiante, docente_actual,
+                                acuerdos_finales=None, compromisos_finales=None, acta_anterior=None):
+    """Genera un Acta de Asistencia en PDF para un estudiante: resumen de asistencia,
+    detalle de inasistencias/permisos/tardanzas con fecha, los patrones de riesgo
+    detectados por analytics.evaluate_student_risk_detailed (mismo motor del semáforo
+    institucional), acuerdos/compromisos, y comparación de tendencia contra el acta
+    anterior de ese mismo estudiante (si existe)."""
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        raise RuntimeError(
+            "Falta instalar la librería 'fpdf2'. Ejecuta en tu terminal: pip install fpdf2"
+        )
+
+    def limpiar_texto_pdf(texto):
+        """Los fonts base de fpdf2 (Helvetica) solo soportan Latin-1: tildes/ñ están
+        bien, pero emojis u otros símbolos Unicode rompen la generación. Se reemplazan
+        por '?' en vez de dejar que el PDF falle."""
+        if texto is None:
+            return "-"
+        return str(texto).encode("latin-1", errors="replace").decode("latin-1")
+
+    resultado_detallado = evaluate_student_risk_detailed(session, estudiante.id)
+    status_riesgo = resultado_detallado['status']
+    pct_asistencia = resultado_detallado['pct']
+    patrones = resultado_detallado['patterns']
+
+    mapa_riesgo_texto = {'🟢': 'BAJO', '🟡': 'MEDIO', '🔴': 'ALTO'}
+    riesgo_texto = mapa_riesgo_texto.get(status_riesgo, 'N/D')
+
+    thirty_days_ago = date.today() - timedelta(days=30)
+    registros = session.query(Attendance).filter(
+        Attendance.student_id == estudiante.id,
+        Attendance.date >= thirty_days_ago
+    ).order_by(Attendance.date.asc()).all()
+
+    total = len(registros)
+    presentes = sum(1 for r in registros if r.status == 'Presente')
+    tardanzas = sum(1 for r in registros if r.status == 'Tardanza')
+    ausentes = sum(1 for r in registros if r.status == 'Ausente')
+    permisos = sum(1 for r in registros if r.status == 'Permiso')
+
+    normativa_aplicable = sugerir_normativa_aplicable(resultado_detallado['tags'], ausentes, permisos)
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "ACTA DE ASISTENCIA Y SEGUIMIENTO ESTUDIANTIL", ln=True, align="C")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, f"Generada el {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="C")
+    pdf.ln(6)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Datos del Estudiante", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 7, f"Nombre: {limpiar_texto_pdf(estudiante.name)}", ln=True)
+    pdf.cell(0, 7, f"NIE: {estudiante.id}", ln=True)
+    pdf.cell(0, 7, f"Sección: {limpiar_texto_pdf(estudiante.section)}", ln=True)
+    pdf.cell(0, 7, f"Docente Orientador: {limpiar_texto_pdf(getattr(docente_actual, 'username', '-'))}", ln=True)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Resumen de Asistencia (Últimos 30 días)", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 7, f"Porcentaje de Asistencia: {pct_asistencia}%", ln=True)
+    pdf.cell(0, 7, f"Nivel de Riesgo: {riesgo_texto}", ln=True)
+    pdf.cell(0, 7,
+             f"Total de registros: {total}   |   Presentes: {presentes}   |   "
+             f"Tardanzas: {tardanzas}   |   Ausencias: {ausentes}   |   Permisos: {permisos}",
+             ln=True)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Patrones Detectados", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    if patrones:
+        for p in patrones:
+            pdf.multi_cell(0, 6, f"- {limpiar_texto_pdf(p)}", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.cell(0, 7, "No se detectaron patrones de riesgo en el período evaluado.", ln=True)
+    pdf.ln(4)
+
+    if normativa_aplicable:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Marco Normativo Aplicable (Manual de Convivencia INDET 2025)", ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        for norma in normativa_aplicable:
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(0, 6, limpiar_texto_pdf(f"Nivel: {norma['nivel']} — {norma['articulo']}"),
+                          new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 5, limpiar_texto_pdf(norma['texto']), new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 5, limpiar_texto_pdf(f"Clasificación: {norma['clasificacion']}"),
+                          new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 5, limpiar_texto_pdf(f"Sanción/acción sugerida: {norma['sancion_sugerida']}"),
+                          new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+        pdf.ln(2)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Detalle de Inasistencias, Tardanzas y Permisos", ln=True)
+
+    registros_relevantes = [r for r in registros if r.status in ('Ausente', 'Permiso', 'Tardanza')]
+
+    if registros_relevantes:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(35, 7, "Fecha", border=1)
+        pdf.cell(30, 7, "Estado", border=1)
+        pdf.cell(0, 7, "Observación", border=1, ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        for r in registros_relevantes:
+            obs = limpiar_texto_pdf(r.observation or "-")
+            if len(obs) > 60:
+                obs = obs[:57] + "..."
+            pdf.cell(35, 7, r.date.strftime('%d/%m/%Y'), border=1)
+            pdf.cell(30, 7, r.status, border=1)
+            pdf.cell(0, 7, obs, border=1, ln=True)
+    else:
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 7, "Sin inasistencias, tardanzas ni permisos registrados en el período.", ln=True)
+
+    pdf.ln(4)
+
+    # --- Seguimiento respecto al acta anterior (si existe) ---
+    if acta_anterior is not None:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Seguimiento Respecto al Acta Anterior", ln=True)
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 7, f"Acta anterior generada el: {acta_anterior.fecha_generacion.strftime('%d/%m/%Y')}", ln=True)
+        if acta_anterior.pct_asistencia_snapshot is not None:
+            diff = pct_asistencia - acta_anterior.pct_asistencia_snapshot
+            if diff > 2:
+                texto_tendencia = (f"MEJORO: de {acta_anterior.pct_asistencia_snapshot}% a {pct_asistencia}% "
+                                   f"de asistencia (+{diff:.1f} puntos)")
+            elif diff < -2:
+                texto_tendencia = (f"EMPEORO: de {acta_anterior.pct_asistencia_snapshot}% a {pct_asistencia}% "
+                                   f"de asistencia ({diff:.1f} puntos)")
+            else:
+                texto_tendencia = (f"SE MANTUVO similar: de {acta_anterior.pct_asistencia_snapshot}% a "
+                                   f"{pct_asistencia}% de asistencia")
+            pdf.multi_cell(0, 6, limpiar_texto_pdf(texto_tendencia), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
+
+    # --- Acuerdos y compromisos ---
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Acuerdos del Estudiante", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    acuerdos_validos = [a for a in (acuerdos_finales or []) if a and a.strip()]
+    if acuerdos_validos:
+        for a in acuerdos_validos:
+            pdf.multi_cell(0, 6, f"- {limpiar_texto_pdf(a.strip())}", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.cell(0, 7, "(Sin acuerdos registrados)", ln=True)
+    pdf.ln(3)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Compromisos Institucionales", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    compromisos_validos = [c for c in (compromisos_finales or []) if c and c.strip()]
+    if compromisos_validos:
+        for c in compromisos_validos:
+            pdf.multi_cell(0, 6, f"- {limpiar_texto_pdf(c.strip())}", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.cell(0, 7, "(Sin compromisos registrados)", ln=True)
+
+    pdf.ln(16)
+    pdf.set_font("Helvetica", "", 10)
+    col_firma_w = 90
+    pdf.cell(col_firma_w, 6, "_________________________", align="C")
+    pdf.cell(col_firma_w, 6, "_________________________", align="C", ln=True)
+    pdf.cell(col_firma_w, 6, "Firma del Estudiante / Responsable", align="C")
+    pdf.cell(col_firma_w, 6, "Firma del Docente Orientador", align="C", ln=True)
+
+    salida = pdf.output()
+    return bytes(salida)
+
+# =============================================================================
+# IDENTIDAD VISUAL NEXUS — logo + paleta de colores extraída del logo oficial
+# =============================================================================
+# Coloca el archivo del logo (el que me compartiste) en la misma carpeta que
+# este app.py, con el nombre "logo_nexus.png" (o cambia la ruta de abajo).
+LOGO_PATH = "logo_nexus.png"
+
+_page_icon = "🎓"
+if os.path.exists(LOGO_PATH):
+    try:
+        from PIL import Image as _PILImage
+        _page_icon = _PILImage.open(LOGO_PATH)
+    except Exception:
+        pass
+
+st.set_page_config(page_title="NEXUS", page_icon=_page_icon, layout="wide")
+
+if os.path.exists(LOGO_PATH):
+    st.logo(LOGO_PATH, icon_image=LOGO_PATH)
+
+CSS_NEXUS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root{
+    --nexus-navy: #0B1F4D;
+    --nexus-navy-dark: #071433;
+    --nexus-navy-light: #1E3A73;
+    --nexus-gold: #C9972E;
+    --nexus-gold-light: #E4C77A;
+    --nexus-bg: #F7F8FB;
+    --nexus-white: #FFFFFF;
+}
+
+html, body, [data-testid="stAppViewContainer"]{
+    background-color: var(--nexus-bg);
+    background-image: radial-gradient(circle at 15% 10%, rgba(11,31,77,0.035) 0%, transparent 45%),
+                       radial-gradient(circle at 85% 90%, rgba(201,151,46,0.05) 0%, transparent 45%);
+    font-family: 'Inter', sans-serif;
+}
+
+/* --- Scrollbar personalizado --- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--nexus-bg); }
+::-webkit-scrollbar-thumb {
+    background: var(--nexus-navy-light);
+    border-radius: 10px;
+    border: 2px solid var(--nexus-bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--nexus-gold); }
+
+/* --- Tarjeta de login --- */
+.nexus-login-card {
+    background: var(--nexus-white);
+    border-radius: 16px;
+    padding: 2rem 2rem 1rem 2rem;
+    margin-top: 3rem;
+    box-shadow: 0 12px 32px rgba(11, 31, 77, 0.14);
+    border-top: 4px solid var(--nexus-gold);
+    animation: nexusFadeIn 0.5s ease-out;
+}
+
+[data-testid="stHeader"]{
+    background-color: transparent;
+}
+
+/* --- Títulos con la tipografía serif del logo --- */
+h1, h2, h3 {
+    font-family: 'Playfair Display', serif !important;
+    color: var(--nexus-navy) !important;
+    letter-spacing: 0.3px;
+}
+h4, h5, h6 {
+    color: var(--nexus-navy) !important;
+    font-family: 'Inter', sans-serif;
+}
+
+/* --- Animación de entrada suave para el contenido principal --- */
+[data-testid="stAppViewContainer"] > .main {
+    animation: nexusFadeIn 0.45s ease-out;
+}
+@keyframes nexusFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Botones --- */
+.stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+    background: linear-gradient(135deg, var(--nexus-navy) 0%, var(--nexus-navy-light) 100%);
+    color: var(--nexus-white) !important;
+    border: 1px solid var(--nexus-gold);
+    border-radius: 8px;
+    font-weight: 600;
+    padding: 0.5rem 1.1rem;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.25s ease;
+    box-shadow: 0 2px 6px rgba(11, 31, 77, 0.15);
+}
+.stButton > button:hover, .stFormSubmitButton > button:hover, .stDownloadButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(11, 31, 77, 0.28);
+    background: linear-gradient(135deg, var(--nexus-gold) 0%, var(--nexus-gold-light) 100%);
+    color: var(--nexus-navy-dark) !important;
+    border-color: var(--nexus-navy);
+}
+.stButton > button:active{ transform: translateY(0); }
+
+/* --- Botón primario (type="primary") con más protagonismo dorado --- */
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--nexus-gold) 0%, #B9822A 100%);
+    color: var(--nexus-navy-dark) !important;
+    border: 1px solid var(--nexus-navy);
+}
+.stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, var(--nexus-navy) 0%, var(--nexus-navy-light) 100%);
+    color: var(--nexus-white) !important;
+}
+
+/* --- Pestañas (st.tabs) --- */
+[data-testid="stTabs"] button[data-baseweb="tab"] {
+    font-weight: 600;
+    color: var(--nexus-navy-light);
+    transition: color 0.2s ease;
+}
+[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
+    color: var(--nexus-gold);
+}
+[data-testid="stTabs"] button[aria-selected="true"] {
+    color: var(--nexus-navy) !important;
+}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+    background-color: var(--nexus-gold) !important;
+    height: 3px !important;
+}
+
+/* --- Tarjetas / contenedores con borde (st.container(border=True)) --- */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 12px !important;
+    border: 1px solid rgba(11, 31, 77, 0.12) !important;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    box-shadow: 0 6px 18px rgba(11, 31, 77, 0.12);
+}
+
+/* --- Métricas --- */
+[data-testid="stMetric"] {
+    background: var(--nexus-white);
+    border-left: 4px solid var(--nexus-gold);
+    border-radius: 10px;
+    padding: 0.6rem 0.9rem;
+    box-shadow: 0 2px 8px rgba(11, 31, 77, 0.06);
+}
+[data-testid="stMetricValue"] { color: var(--nexus-navy); }
+
+/* --- Alertas (success/info/warning/error) con entrada animada --- */
+[data-testid="stAlert"] {
+    border-radius: 10px;
+    animation: nexusSlideIn 0.3s ease-out;
+}
+@keyframes nexusSlideIn {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* --- Barra de progreso / spinner con acento dorado --- */
+.stSpinner > div { border-top-color: var(--nexus-gold) !important; }
+
+/* --- Inputs, selects, textareas --- */
+.stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"],
+.stDateInput input, .stNumberInput input {
+    border-radius: 8px !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+    border-color: var(--nexus-gold) !important;
+    box-shadow: 0 0 0 1px var(--nexus-gold) !important;
+}
+
+/* --- Dataframes / tablas --- */
+[data-testid="stDataFrame"] {
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 2px 10px rgba(11, 31, 77, 0.08);
+    border: 1px solid rgba(11, 31, 77, 0.08);
+}
+
+/* --- Transición suave al cambiar de pestaña (Streamlit vuelve a montar el
+       panel en cada rerun, así que la animación se repite en cada cambio) --- */
+[data-baseweb="tab-panel"] {
+    animation: nexusFadeIn 0.35s ease-out;
+}
+
+/* --- Pulso para alertas de riesgo ALTO (badge 🔴) --- */
+.nexus-badge-pulse {
+    animation: nexusPulse 1.8s ease-in-out infinite;
+}
+@keyframes nexusPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(217, 57, 76, 0.45); }
+    70%  { box-shadow: 0 0 0 8px rgba(217, 57, 76, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(217, 57, 76, 0); }
+}
+
+/* --- Skeleton loader (shimmer) para mientras cargan tablas/PDFs --- */
+.nexus-skel-line {
+    height: 14px;
+    border-radius: 6px;
+    margin: 6px 0;
+    background: linear-gradient(90deg, #E7EAF2 25%, #F3F5F9 37%, #E7EAF2 63%);
+    background-size: 400% 100%;
+    animation: nexusShimmer 1.4s ease-in-out infinite;
+}
+@keyframes nexusShimmer {
+    0%   { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+/* --- Expander --- */
+[data-testid="stExpander"] {
+    border-radius: 10px !important;
+    border: 1px solid rgba(11, 31, 77, 0.12) !important;
+}
+
+/* --- Separadores más sutiles y elegantes --- */
+hr { border-color: rgba(201, 151, 46, 0.35) !important; }
+
+/* --- Balloons/confetti no se tocan: son de Streamlit y ya animan solos --- */
+</style>
+"""
+st.markdown(CSS_NEXUS, unsafe_allow_html=True)
 
 try:
     init_db()
@@ -39,10 +458,23 @@ if 'admin_view' not in st.session_state:
 # AUTENTICACIÓN / LOGIN
 # -----------------------------------------------------------------------------
 if st.session_state['user'] is None:
-    st.title("🎓 NEXUS ACCESO A SISTEMA")
-    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
+    col_l1, col_l2, col_l3 = st.columns([1, 1.3, 1])
     with col_l2:
-        st.subheader("Iniciar Sesión")
+        st.markdown('<div class="nexus-login-card">', unsafe_allow_html=True)
+        if os.path.exists(LOGO_PATH):
+            col_logo1, col_logo2, col_logo3 = st.columns([1, 1.4, 1])
+            with col_logo2:
+                st.image(LOGO_PATH, width='stretch')
+        st.markdown(
+            '<h2 style="text-align:center; margin-top:0.2rem;">Acceso al Sistema</h2>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            '<p style="text-align:center; color:#5a6b8c; margin-top:-0.6rem;">'
+            'Calidad e Innovación Educativa</p>',
+            unsafe_allow_html=True
+        )
+
         username_input = st.text_input("Usuario", key="login_user_input")
         password_input = st.text_input("Contraseña", type="password", key="login_pass_input")
 
@@ -59,16 +491,75 @@ if st.session_state['user'] is None:
         st.caption("🔒 **Credenciales de Prueba:**")
         st.caption(
             "- **Admin:** `admin` / `123` | **Docente Orientador:** `profe` / `123` | **Alumno:** `juan` / `123`")
+        st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
+NEXUS_RIESGO_BADGE = {
+    "🟢": {"icon": "🟢", "label": "RIESGO BAJO", "bg": "#E6F6EA", "fg": "#1E7A34", "border": "#4CAF50"},
+    "🟡": {"icon": "🟡", "label": "RIESGO MEDIO", "bg": "#FFF6E0", "fg": "#8A6200", "border": "#E0A800"},
+    "🔴": {"icon": "🔴", "label": "RIESGO ALTO", "bg": "#FDEAEA", "fg": "#A6273A", "border": "#D9394C"},
+}
+
+
+def render_badge_riesgo(status_emoji, pct=None):
+    cfg = NEXUS_RIESGO_BADGE.get(status_emoji, NEXUS_RIESGO_BADGE["🟢"])
+    pct_html = f'<span style="opacity:0.75; font-weight:500;"> · {pct}% asistencia</span>' if pct is not None else ""
+    clase_pulso = "nexus-badge-pulse" if status_emoji == "🔴" else ""
+    st.markdown(f"""
+    <div class="{clase_pulso}" style="display:inline-flex; align-items:center; gap:0.5rem;
+                background:{cfg['bg']}; color:{cfg['fg']}; border:1.5px solid {cfg['border']};
+                border-radius:999px; padding:0.4rem 1rem; font-weight:700; font-size:0.95rem;
+                margin:0.3rem 0; box-shadow:0 2px 6px rgba(11,31,77,0.08);">
+        <span style="font-size:1.1rem;">{cfg['icon']}</span>
+        <span>{cfg['label']}</span>
+        {pct_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def mostrar_skeleton(placeholder, n_lineas=5, titulo=None):
+    """Dibuja un skeleton loader (shimmer) dentro de un st.empty() mientras se
+    calcula/consulta algo que tarda un momento perceptible (tablas grandes, PDFs)."""
+    lineas_html = "".join(
+        f'<div class="nexus-skel-line" style="width:{95 - (i % 3) * 12}%;"></div>'
+        for i in range(n_lineas)
+    )
+    titulo_html = f'<div style="font-weight:600; color:#5a6b8c; margin-bottom:0.5rem;">{titulo}</div>' if titulo else ""
+    placeholder.markdown(f'<div>{titulo_html}{lineas_html}</div>', unsafe_allow_html=True)
+
+
 current_user = st.session_state['user']
+
+# --- Badge visual por rol (ícono + color distintivo) ---
+NEXUS_ROL_BADGE = {
+    "Admin": {"icon": "🛡️", "bg": "#0B1F4D", "fg": "#FFFFFF", "border": "#C9972E"},
+    "Docente": {"icon": "🍎", "bg": "#EAF1FF", "fg": "#0B1F4D", "border": "#1E3A73"},
+    "Alumno": {"icon": "🎒", "bg": "#FBF3E2", "fg": "#7A5A12", "border": "#C9972E"},
+}
+
+
+def render_badge_rol(rol, username, seccion=None):
+    cfg = NEXUS_ROL_BADGE.get(rol, {"icon": "👤", "bg": "#EEE", "fg": "#333", "border": "#999"})
+    seccion_html = f'<span style="opacity:0.8;"> · Sección: {seccion}</span>' if seccion else ""
+    st.markdown(f"""
+    <div style="display:inline-flex; align-items:center; gap:0.5rem;
+                background:{cfg['bg']}; color:{cfg['fg']}; border:1.5px solid {cfg['border']};
+                border-radius:999px; padding:0.35rem 0.9rem; font-weight:600; font-size:0.92rem;
+                margin-top:0.2rem; box-shadow:0 2px 6px rgba(11,31,77,0.08);">
+        <span style="font-size:1.1rem;">{cfg['icon']}</span>
+        <span>{username}</span>
+        <span style="opacity:0.55;">|</span>
+        <span>{rol}</span>
+        {seccion_html}
+    </div>
+    """, unsafe_allow_html=True)
+
 
 # Encabezado
 col_h1, col_h2 = st.columns([4, 1])
 with col_h1:
     st.title("🎓 NEXUS SISTEMA INTEGRAL")
-    st.caption(f"Usuario: **{current_user.username}** | Rol: **{current_user.role}**" + (
-        f" | Sección Asignada (Orientador): **{current_user.assigned_section}**" if current_user.assigned_section else ""))
+    render_badge_rol(current_user.role, current_user.username, current_user.assigned_section)
 with col_h2:
     if st.button("🚪 Cerrar Sesión", key="btn_logout_header"):
         st.session_state['user'] = None
@@ -88,6 +579,102 @@ if current_user.role == "Alumno":
         st.stop()
 
     st.info(f"Estudiante: **{student_data.name}** | Sección: **{student_data.section}**")
+
+    # =====================================================================
+    # CANJE DE QR DE ASISTENCIA RÁPIDA (si se llegó a esta página vía el
+    # enlace codificado en el QR, ej. ?attendance_token=XXXX)
+    # =====================================================================
+    token_param_qr = st.query_params.get("attendance_token")
+    if token_param_qr:
+        st.markdown("### 📷 Registro de Asistencia por Código QR")
+
+        token_row_qr = session.query(QRAttendanceToken).filter_by(token=token_param_qr).first()
+
+        if not token_row_qr:
+            st.error("❌ Este código QR no es válido o ya no existe.")
+        elif datetime.now() > token_row_qr.expires_at:
+            st.error("⌛ Este código QR ya expiró (los códigos duran 5 minutos). Pide a tu docente que genere uno nuevo.")
+        elif token_row_qr.seccion != student_data.section:
+            st.error("❌ Este código QR no corresponde a tu sección.")
+        else:
+            ya_canjeado = session.query(QRAttendanceCheckin).filter_by(
+                token_id=token_row_qr.id, student_id=student_data.id
+            ).first()
+
+            if ya_canjeado:
+                st.info("✅ Ya habías registrado tu asistencia con este código QR.")
+            else:
+                # --- 1) VALIDACIÓN DE DISPOSITIVO VINCULADO ---
+                device_id_navegador = streamlit_js_eval(
+                    js_expressions="""
+                    (function(){
+                        let id = localStorage.getItem('nexus_device_id');
+                        if(!id){
+                            id = 'dev_' + Math.random().toString(36).substring(2,12) + Date.now().toString(36);
+                            localStorage.setItem('nexus_device_id', id);
+                        }
+                        return id;
+                    })()
+                    """,
+                    key="get_device_id_qr"
+                )
+
+                if device_id_navegador is None:
+                    st.info("🔄 Verificando tu dispositivo... si no avanza en unos segundos, recarga la página.")
+                else:
+                    dispositivo_ok = False
+                    if not current_user.device_id:
+                        # Primera vez que este usuario usa el QR: se vincula automáticamente este dispositivo
+                        current_user.device_id = device_id_navegador
+                        session.commit()
+                        dispositivo_ok = True
+                    elif current_user.device_id == device_id_navegador:
+                        dispositivo_ok = True
+
+                    if not dispositivo_ok:
+                        st.error(
+                            "❌ Este código debe escanearse desde **tu propio dispositivo vinculado**. "
+                            "Si cambiaste de celular, pide a tu docente orientador que reinicie tu vínculo de dispositivo.")
+                    else:
+                        # --- 2) VALIDACIÓN DE GPS (mismo criterio que el marcaje automático) ---
+                        loc_qr = get_geolocation()
+                        if loc_qr and 'coords' in loc_qr:
+                            dist_qr = calculate_distance(
+                                loc_qr['coords']['latitude'], loc_qr['coords']['longitude'],
+                                INSTITUTE_LAT, INSTITUTE_LON
+                            )
+                            if dist_qr <= MAX_DISTANCE_METERS:
+                                sub_id_qr = token_row_qr.subject_id if token_row_qr.subject_id else 1
+                                existing_att_qr = session.query(Attendance).filter_by(
+                                    student_id=student_data.id, subject_id=sub_id_qr, date=date.today()
+                                ).first()
+
+                                if not existing_att_qr:
+                                    session.add(Attendance(
+                                        student_id=student_data.id,
+                                        subject_id=sub_id_qr,
+                                        date=date.today(),
+                                        status="Presente",
+                                        observation="Asistencia registrada vía QR"
+                                    ))
+                                else:
+                                    existing_att_qr.status = "Presente"
+                                    existing_att_qr.observation = "Asistencia registrada vía QR"
+
+                                session.add(QRAttendanceCheckin(
+                                    token_id=token_row_qr.id, student_id=student_data.id
+                                ))
+                                session.commit()
+
+                                st.balloons()
+                                st.success("🚀 ¡Asistencia registrada correctamente mediante el código QR!")
+                            else:
+                                st.error(
+                                    f"❌ Debes estar dentro del instituto para registrar tu asistencia por QR. "
+                                    f"(Te encuentras a {dist_qr:.2f} metros)")
+                        else:
+                            st.warning("Por favor activa y concede el acceso a tu ubicación GPS en el navegador para completar el registro.")
+        st.stop()
 
     now = datetime.now()
     dias_ingles = {'Monday': 'Lunes', 'Tuesday': 'Martes', 'Wednesday': 'Miércoles', 'Thursday': 'Jueves',
@@ -860,6 +1447,10 @@ if current_user.role == "Admin":
                         dias_semana = DIAS_SEMANA
                         tabla_matriz = []
 
+                        skel_placeholder_sec = st.empty()
+                        mostrar_skeleton(skel_placeholder_sec, n_lineas=8,
+                                         titulo="Cargando horario de la sección...")
+
                         for b in MEDIOS_BLOQUES_VIS:
                             fila = {"Hora / Bloque": b["hora"]}
                             if b["es_pausa"]:
@@ -885,6 +1476,7 @@ if current_user.role == "Admin":
                             tabla_matriz.append(fila)
 
                         df_final_matriz = pd.DataFrame(tabla_matriz)
+                        skel_placeholder_sec.empty()
 
                         st.markdown(f"##### Vista de Horario en Cuadrícula: **{sec_elegida}**")
                         st.caption("✏️ = bloque editado manualmente (protegido de la regeneración automática)")
@@ -922,6 +1514,10 @@ if current_user.role == "Admin":
                         dias_semana = DIAS_SEMANA
                         tabla_matriz_doc = []
 
+                        skel_placeholder_doc = st.empty()
+                        mostrar_skeleton(skel_placeholder_doc, n_lineas=8,
+                                         titulo="Cargando horario del docente...")
+
                         for b in MEDIOS_BLOQUES_VIS:
                             fila = {"Hora / Bloque": b["hora"]}
                             if b["es_pausa"]:
@@ -947,6 +1543,7 @@ if current_user.role == "Admin":
                             tabla_matriz_doc.append(fila)
 
                         df_doc_matriz = pd.DataFrame(tabla_matriz_doc)
+                        skel_placeholder_doc.empty()
 
                         st.markdown(f"##### Vista de Horario en Cuadrícula: **{doc_elegido}**")
                         st.caption("✏️ = bloque editado manualmente (protegido de la regeneración automática)")
@@ -1366,6 +1963,98 @@ if "📋 Mi Sección (Orientador)" in available_tabs:
     with tabs[idx]:
         st.subheader(f"📋 Panel del Docente Orientador — Sección: {current_user.assigned_section}")
 
+        # --- BANNER DE ALERTAS ACCIONABLES ---
+        alertas_docente = get_alertas_docente(session, current_user.assigned_section)
+        if alertas_docente:
+            with st.container(border=True):
+                st.markdown(f"#### 🔔 {len(alertas_docente)} Alerta(s) que requieren tu atención")
+                for al in alertas_docente:
+                    if al['tipo'] == 'ausencia_hoy':
+                        st.warning(al['detalle'])
+                    else:
+                        st.error(al['detalle'])
+        else:
+            st.success("✅ Sin alertas pendientes por ahora: nadie faltó hoy sin justificar y no hay casos en riesgo alto sin seguimiento.")
+
+        # --- GENERADOR DE QR DE ASISTENCIA RÁPIDA ---
+        st.markdown("---")
+        st.markdown("#### 📷 Generar QR de Asistencia Rápida")
+        st.caption(
+            "Genera un código QR válido por 5 minutos para que los estudiantes de tu sección tomen asistencia "
+            "escaneándolo con la cámara de su celular. Se sigue exigiendo que estén dentro del instituto "
+            "(GPS) y que escaneen desde su propio dispositivo vinculado.")
+
+        if st.button("📷 Generar Nuevo QR de Asistencia", key="btn_generar_qr_asistencia"):
+            nuevo_token_qr = secrets.token_urlsafe(16)
+            ahora_qr = datetime.now()
+            expiracion_qr = ahora_qr + timedelta(minutes=QR_TOKEN_VALIDEZ_MINUTOS)
+            nuevo_qr_row = QRAttendanceToken(
+                token=nuevo_token_qr,
+                seccion=current_user.assigned_section,
+                docente_username=getattr(current_user, 'username', None),
+                created_at=ahora_qr,
+                expires_at=expiracion_qr
+            )
+            session.add(nuevo_qr_row)
+            session.commit()
+            st.session_state['qr_token_activo'] = nuevo_token_qr
+            st.session_state['qr_token_expira'] = expiracion_qr.isoformat()
+            st.rerun()
+
+        if st.session_state.get('qr_token_activo'):
+            expira_dt_qr = datetime.fromisoformat(st.session_state['qr_token_expira'])
+            segundos_restantes_qr = (expira_dt_qr - datetime.now()).total_seconds()
+
+            if segundos_restantes_qr <= 0:
+                st.warning("⌛ El último QR generado ya expiró. Genera uno nuevo cuando lo necesites.")
+            else:
+                url_checkin_qr = f"{APP_BASE_URL}?attendance_token={st.session_state['qr_token_activo']}"
+                try:
+                    import qrcode
+                    img_qr_obj = qrcode.make(url_checkin_qr)
+                    buf_qr = io.BytesIO()
+                    img_qr_obj.save(buf_qr, format="PNG")
+                    col_qr1, col_qr2 = st.columns([1, 2])
+                    with col_qr1:
+                        st.image(buf_qr.getvalue(),
+                                 caption=f"Válido por ~{int(segundos_restantes_qr)} segundos más", width=220)
+                    with col_qr2:
+                        st.caption("Si el QR no se puede escanear, comparte este enlace directamente:")
+                        st.code(url_checkin_qr, language=None)
+
+                        token_row_activo = session.query(QRAttendanceToken).filter_by(
+                            token=st.session_state['qr_token_activo']).first()
+                        if token_row_activo:
+                            total_canjes = session.query(QRAttendanceCheckin).filter_by(
+                                token_id=token_row_activo.id).count()
+                            st.metric("Estudiantes ya registrados con este QR", total_canjes)
+                except ImportError:
+                    st.error(
+                        "Falta instalar la librería 'qrcode'. Ejecuta en tu terminal: pip install \"qrcode[pil]\"")
+
+        # --- HERRAMIENTA: REINICIAR DISPOSITIVO VINCULADO DE UN ESTUDIANTE ---
+        with st.expander("🔧 Reiniciar dispositivo vinculado de un estudiante"):
+            st.caption(
+                "Usa esto si un estudiante cambió de celular y el sistema ya no le deja escanear el QR "
+                "de asistencia porque está vinculado a su equipo anterior.")
+            estudiantes_para_reset = session.query(Student).filter_by(
+                section=current_user.assigned_section).all()
+            if estudiantes_para_reset:
+                mapa_reset = {f"{e.name} (NIE: {e.id})": e for e in estudiantes_para_reset}
+                est_reset_label = st.selectbox("Estudiante", list(mapa_reset.keys()),
+                                               key="sb_reset_dispositivo_est")
+                est_reset_obj = mapa_reset[est_reset_label]
+                if st.button("🔄 Reiniciar dispositivo vinculado", key="btn_reset_dispositivo"):
+                    usuario_est_reset = session.query(User).filter_by(student_id=est_reset_obj.id).first()
+                    if usuario_est_reset:
+                        usuario_est_reset.device_id = None
+                        session.commit()
+                        st.success(
+                            f"✅ Dispositivo reiniciado para {est_reset_obj.name}. "
+                            f"La próxima vez que escanee un QR, se vinculará su nuevo celular.")
+                    else:
+                        st.warning("Este estudiante no tiene una cuenta de usuario asociada.")
+
         my_students = session.query(Student).filter_by(section=current_user.assigned_section).all()
         st.write(f"Total de Estudiantes Tutorados: **{len(my_students)}**")
 
@@ -1381,7 +2070,7 @@ if "📋 Mi Sección (Orientador)" in available_tabs:
             st.info(
                 "💡 Como docente orientador, puedes modificar manualmente el estado de asistencia de cada alumno si se presenta un retraso o justificación.")
 
-            opciones_estado = ["Presente", "Tardanza", "Ausente"]
+            opciones_estado = ["Presente", "Tardanza", "Ausente", "Permiso"]
 
             # Listado interactivo por estudiante para modificar el estado
             for est in my_students:
@@ -1405,7 +2094,7 @@ if "📋 Mi Sección (Orientador)" in available_tabs:
                             "Estado",
                             options=opciones_estado,
                             index=idx_default,
-                            key=f"sel_mod_estado_{est.id}_{fecha_consulta}",
+                            key=f"sel_mod_estado_{est.id}_{fecha_consulta}_{estado_actual}",
                             label_visibility="collapsed"
                         )
 
@@ -1429,23 +2118,40 @@ if "📋 Mi Sección (Orientador)" in available_tabs:
 
             # Selector de estudiante para ver su expediente y patrones detallados
             mapa_nombres_est = {f"{e.name} (NIE: {e.id})": e for e in my_students}
+            est_labels_detalle = list(mapa_nombres_est.keys())
+            est_ids_detalle_ordenados = [e.id for e in my_students]
+
+            if "est_detalle_seleccionado_id" not in st.session_state or \
+                    st.session_state["est_detalle_seleccionado_id"] not in est_ids_detalle_ordenados:
+                st.session_state["est_detalle_seleccionado_id"] = est_ids_detalle_ordenados[0]
+
+            idx_est_detalle_actual = est_ids_detalle_ordenados.index(
+                st.session_state["est_detalle_seleccionado_id"])
+
             est_seleccionado_label = st.selectbox("Seleccionar Estudiante para Diagnóstico Detallado",
-                                                  list(mapa_nombres_est.keys()),
+                                                  est_labels_detalle,
+                                                  index=idx_est_detalle_actual,
                                                   key="sb_orientador_select_alumno_detalle")
             est_obj = mapa_nombres_est[est_seleccionado_label]
+            st.session_state["est_detalle_seleccionado_id"] = est_obj.id
 
             # Obtenemos todo el historial de asistencia del estudiante
             historial_est = session.query(Attendance).filter_by(student_id=est_obj.id).all()
+
+            resultado_riesgo_est = evaluate_student_risk_detailed(session, est_obj.id)
+            render_badge_riesgo(resultado_riesgo_est['status'], resultado_riesgo_est['pct'])
 
             total_asistencias = len(historial_est)
             presentes = sum(1 for h in historial_est if h.status == "Presente")
             ausentes = sum(1 for h in historial_est if h.status == "Ausente")
             tardanzas = sum(1 for h in historial_est if h.status == "Tardanza")
+            permisos_count = sum(1 for h in historial_est if h.status == "Permiso")
 
-            col_p1, col_p2, col_p3 = st.columns(3)
+            col_p1, col_p2, col_p3, col_p4 = st.columns(4)
             col_p1.metric("Total Registros", total_asistencias)
             col_p2.metric("Asistencias / Presente", presentes)
             col_p3.metric("Tardanzas / Ausencias", f"{tardanzas} / {ausentes}")
+            col_p4.metric("Permisos Justificados", permisos_count)
 
             st.markdown("#### 🧠 Patrones Detectados en el Estudiante:")
             patrones = []
@@ -1469,6 +2175,130 @@ if "📋 Mi Sección (Orientador)" in available_tabs:
             for pat in patrones:
                 st.info(pat)
 
+            st.markdown("---")
+            st.markdown("#### 📄 Acta de Asistencia")
+            st.caption(
+                "Genera un acta en PDF con los datos del estudiante, el resumen de asistencia, el detalle de "
+                "inasistencias/tardanzas/permisos con fecha, los patrones de riesgo detectados, acuerdos y "
+                "compromisos, y el seguimiento respecto al acta anterior (si existe).")
+
+            resultado_detallado_acta = evaluate_student_risk_detailed(session, est_obj.id)
+            acuerdos_sugeridos, compromisos_sugeridos = sugerir_acuerdos_compromisos(
+                resultado_detallado_acta['tags'])
+            # Rellenar a 2 elementos siempre, por si sugirió menos
+            while len(acuerdos_sugeridos) < 2:
+                acuerdos_sugeridos.append("")
+            while len(compromisos_sugeridos) < 2:
+                compromisos_sugeridos.append("")
+
+            st.markdown("##### 🤝 Acuerdos del Estudiante")
+            st.caption("Sugeridos automáticamente según los patrones detectados. Puedes editarlos.")
+            col_ac1, col_ac2 = st.columns(2)
+            with col_ac1:
+                acuerdo_1 = st.text_area("Acuerdo sugerido 1", value=acuerdos_sugeridos[0],
+                                         key=f"acuerdo1_{est_obj.id}", height=80)
+            with col_ac2:
+                acuerdo_2 = st.text_area("Acuerdo sugerido 2", value=acuerdos_sugeridos[1],
+                                         key=f"acuerdo2_{est_obj.id}", height=80)
+            col_ac3, col_ac4 = st.columns(2)
+            with col_ac3:
+                acuerdo_manual_1 = st.text_area("Acuerdo adicional (manual)", value="",
+                                                key=f"acuerdo_manual1_{est_obj.id}", height=80)
+            with col_ac4:
+                acuerdo_manual_2 = st.text_area("Acuerdo adicional (manual)", value="",
+                                                key=f"acuerdo_manual2_{est_obj.id}", height=80)
+
+            st.markdown("##### 🏫 Compromisos Institucionales")
+            st.caption("Sugeridos automáticamente según los patrones detectados. Puedes editarlos.")
+            col_co1, col_co2 = st.columns(2)
+            with col_co1:
+                compromiso_1 = st.text_area("Compromiso sugerido 1", value=compromisos_sugeridos[0],
+                                            key=f"compromiso1_{est_obj.id}", height=80)
+            with col_co2:
+                compromiso_2 = st.text_area("Compromiso sugerido 2", value=compromisos_sugeridos[1],
+                                            key=f"compromiso2_{est_obj.id}", height=80)
+            col_co3, col_co4 = st.columns(2)
+            with col_co3:
+                compromiso_manual_1 = st.text_area("Compromiso adicional (manual)", value="",
+                                                    key=f"compromiso_manual1_{est_obj.id}", height=80)
+            with col_co4:
+                compromiso_manual_2 = st.text_area("Compromiso adicional (manual)", value="",
+                                                    key=f"compromiso_manual2_{est_obj.id}", height=80)
+
+            if st.button("📄 Generar Acta de Asistencia (PDF)", key="btn_generar_acta_pdf"):
+                skel_placeholder_acta = st.empty()
+                mostrar_skeleton(skel_placeholder_acta, n_lineas=6,
+                                 titulo="Generando acta de asistencia (calculando patrones, normativa y tendencia)...")
+                try:
+                    acuerdos_finales = [acuerdo_1, acuerdo_2, acuerdo_manual_1, acuerdo_manual_2]
+                    compromisos_finales = [compromiso_1, compromiso_2, compromiso_manual_1, compromiso_manual_2]
+
+                    # Acta anterior de este mismo estudiante, para calcular tendencia
+                    acta_anterior = session.query(ActaAsistencia).filter_by(
+                        student_id=est_obj.id
+                    ).order_by(ActaAsistencia.fecha_generacion.desc()).first()
+
+                    pdf_bytes_acta = generar_acta_asistencia_pdf(
+                        session, est_obj, current_user,
+                        acuerdos_finales=acuerdos_finales,
+                        compromisos_finales=compromisos_finales,
+                        acta_anterior=acta_anterior
+                    )
+                    skel_placeholder_acta.empty()
+
+                    # --- Vincular con un caso de seguimiento (CaseTracker) ---
+                    caso_abierto = session.query(CaseTracker).filter(
+                        CaseTracker.student_id == est_obj.id,
+                        CaseTracker.status != 'Cerrado'
+                    ).first()
+                    if not caso_abierto:
+                        caso_abierto = CaseTracker(
+                            student_id=est_obj.id,
+                            status='Observación',
+                            notes=f"Caso abierto automáticamente al generar acta de asistencia el "
+                                  f"{date.today().strftime('%d/%m/%Y')}.",
+                            created_at=date.today()
+                        )
+                        session.add(caso_abierto)
+                        session.flush()  # para obtener caso_abierto.id antes del commit final
+
+                    # --- Guardar el snapshot del acta para poder darle seguimiento después ---
+                    nueva_acta = ActaAsistencia(
+                        student_id=est_obj.id,
+                        fecha_generacion=date.today(),
+                        pct_asistencia_snapshot=int(round(resultado_detallado_acta['pct'])),
+                        patrones_snapshot="\n".join(patrones) if patrones else "",
+                        acuerdos="\n".join([a for a in acuerdos_finales if a and a.strip()]),
+                        compromisos="\n".join([c for c in compromisos_finales if c and c.strip()]),
+                        case_tracker_id=caso_abierto.id,
+                        creado_por=getattr(current_user, 'username', None)
+                    )
+                    session.add(nueva_acta)
+                    session.commit()
+
+                    st.session_state["acta_pdf_bytes"] = pdf_bytes_acta
+                    st.session_state["acta_pdf_estudiante_id"] = est_obj.id
+                    st.session_state["acta_pdf_nombre"] = (
+                        f"acta_asistencia_{est_obj.name.replace(' ', '_')}_{date.today().strftime('%Y%m%d')}.pdf"
+                    )
+                    st.success(
+                        "✅ Acta generada y vinculada a un caso de seguimiento. Descárgala abajo. "
+                        "La próxima acta de este estudiante mostrará automáticamente si mejoró o empeoró.")
+                except RuntimeError as err_pdf:
+                    skel_placeholder_acta.empty()
+                    st.error(f"❌ {err_pdf}")
+
+            if st.session_state.get("acta_pdf_bytes") is not None and \
+                    st.session_state.get("acta_pdf_estudiante_id") == est_obj.id:
+                st.download_button(
+                    label="⬇️ Descargar Acta en PDF",
+                    data=st.session_state["acta_pdf_bytes"],
+                    file_name=st.session_state.get("acta_pdf_nombre", "acta_asistencia.pdf"),
+                    mime="application/pdf",
+                    key="btn_descargar_acta_pdf"
+                )
+
+
 # -------------------------------------------------------------
 # TAB: GESTIÓN DE PERMISOS Y JUSTIFICACIONES (ORIENTADOR)
 # -------------------------------------------------------------
@@ -1485,11 +2315,26 @@ if "📝 Gestión de Permisos" in available_tabs:
             st.warning("No hay estudiantes registrados en tu sección para gestionar permisos.")
         else:
             mapa_est_perm = {f"{e.name} (NIE: {e.id})": e for e in my_students_perm}
-            est_perm_label = st.selectbox("Seleccionar Estudiante", list(mapa_est_perm.keys()),
+            est_perm_labels = list(mapa_est_perm.keys())
+            est_perm_ids_ordenados = [e.id for e in my_students_perm]
+
+            if "est_perm_seleccionado_id" not in st.session_state or \
+                    st.session_state["est_perm_seleccionado_id"] not in est_perm_ids_ordenados:
+                st.session_state["est_perm_seleccionado_id"] = est_perm_ids_ordenados[0]
+
+            idx_est_perm_actual = est_perm_ids_ordenados.index(st.session_state["est_perm_seleccionado_id"])
+
+            est_perm_label = st.selectbox("Seleccionar Estudiante", est_perm_labels,
+                                          index=idx_est_perm_actual,
                                           key="sb_permiso_select_estudiante")
             est_obj_perm = mapa_est_perm[est_perm_label]
+            st.session_state["est_perm_seleccionado_id"] = est_obj_perm.id
 
             st.write(f"Estudiante seleccionado: **{est_obj_perm.name}** (NIE: `{est_obj_perm.id}`)")
+
+            if "permiso_form_reset_counter" not in st.session_state:
+                st.session_state["permiso_form_reset_counter"] = 0
+            reset_suffix = st.session_state["permiso_form_reset_counter"]
 
             st.divider()
             with st.form("form_registro_permiso_rango"):
@@ -1510,7 +2355,14 @@ if "📝 Gestión de Permisos" in available_tabs:
                 observacion_permiso = st.text_area(
                     "Detalles / Observación de la Justificación",
                     placeholder="Ej. Reposo médico prescrito por el ISSS por 3 días.",
-                    key="txt_obs_permiso_detalle"
+                    key=f"txt_obs_permiso_detalle_{reset_suffix}"
+                )
+
+                archivo_evidencia = st.file_uploader(
+                    "Adjuntar Evidencia (Constancia Médica, Permiso Oficial, etc.)",
+                    type=["png", "jpg", "jpeg", "pdf"],
+                    key=f"file_evidencia_permiso_{reset_suffix}",
+                    help="Opcional. Se guardará junto a este permiso y quedará disponible en el historial."
                 )
 
                 btn_guardar_permiso = st.form_submit_button("🚀 Registrar Permiso y Generar Asistencias Automáticas",
@@ -1520,6 +2372,21 @@ if "📝 Gestión de Permisos" in available_tabs:
                     if fecha_inicio > fecha_fin:
                         st.error("❌ La fecha de inicio no puede ser posterior a la fecha de fin.")
                     else:
+                        # --- Guardar el archivo de evidencia (si se adjuntó uno) ---
+                        ruta_evidencia_guardada = None
+                        if archivo_evidencia is not None:
+                            carpeta_evidencias = "evidencias_permisos"
+                            os.makedirs(carpeta_evidencias, exist_ok=True)
+                            extension = os.path.splitext(archivo_evidencia.name)[1]
+                            nombre_archivo = (
+                                f"est{est_obj_perm.id}_"
+                                f"{fecha_inicio.strftime('%Y%m%d')}_{fecha_fin.strftime('%Y%m%d')}"
+                                f"_{datetime.now().strftime('%H%M%S')}{extension}"
+                            )
+                            ruta_evidencia_guardada = os.path.join(carpeta_evidencias, nombre_archivo)
+                            with open(ruta_evidencia_guardada, "wb") as f_evid:
+                                f_evid.write(archivo_evidencia.getbuffer())
+
                         # Iterar por cada día del rango seleccionado
                         delta_dias = (fecha_fin - fecha_inicio).days
                         dias_generados = 0
@@ -1541,43 +2408,69 @@ if "📝 Gestión de Permisos" in available_tabs:
                                     student_id=est_obj_perm.id,
                                     subject_id=1,  # ID por defecto para justificaciones generales del orientador
                                     date=dia_actual,
-                                    status="Ausente",
-                                    observation=texto_observacion
+                                    status="Permiso",
+                                    observation=texto_observacion,
+                                    evidencia_path=ruta_evidencia_guardada
                                 )
                                 session.add(nuevo_reg_att)
                             else:
                                 reg_att.subject_id = reg_att.subject_id if reg_att.subject_id else 1
-                                reg_att.status = "Ausente"
+                                reg_att.status = "Permiso"
                                 reg_att.observation = texto_observacion
+                                if ruta_evidencia_guardada:
+                                    reg_att.evidencia_path = ruta_evidencia_guardada
                             dias_generados += 1
 
                         session.commit()
                         st.success(
-                            f"✅ ¡Permiso aplicado con éxito! Se han generado/actualizado los registros de asistencia para {dias_generados} día(s).")
+                            f"✅ ¡Permiso aplicado con éxito! Se han generado/actualizado los registros de asistencia "
+                            f"para {dias_generados} día(s) con estado **Permiso**.")
+
+                        # Forzar que el text_area y el file_uploader nazcan vacíos en el próximo render,
+                        # cambiándoles el key (es la forma confiable de resetear un file_uploader en Streamlit)
+                        st.session_state["permiso_form_reset_counter"] += 1
+
                         st.rerun()
         st.divider()
         st.markdown("#### 📋 Historial de Inasistencias y Permisos Registrados del Estudiante")
 
-        # Consultamos los registros de asistencia de este alumno que contengan una observación de permiso o justificación
-        historial_permisos = session.query(Attendance).filter(
-            Attendance.student_id == est_obj_perm.id,
-            Attendance.observation.isnot(None),
-            Attendance.observation != ""
-        ).order_by(Attendance.date.desc()).all()
-
-        if historial_permisos:
-            datos_hist_perm = []
-            for hp in historial_permisos:
-                datos_hist_perm.append({
-                    "Fecha": hp.date.strftime('%d/%m/%Y'),
-                    "Estatus": hp.status,
-                    "Detalle / Observación": hp.observation
-                })
-
-            df_hp = pd.DataFrame(datos_hist_perm)
-            st.dataframe(df_hp, width='stretch', height=200)
+        if not my_students_perm:
+            st.info("ℹ️ No hay estudiantes registrados en tu sección para mostrar historial.")
         else:
-            st.info("ℹ️ No hay permisos ni observaciones registradas para este estudiante actualmente.")
+            # Consultamos los registros de asistencia de este alumno que contengan una observación de permiso o justificación
+            historial_permisos = session.query(Attendance).filter(
+                Attendance.student_id == est_obj_perm.id,
+                Attendance.observation.isnot(None),
+                Attendance.observation != ""
+            ).order_by(Attendance.date.desc()).all()
+
+            if historial_permisos:
+                datos_hist_perm = []
+                for hp in historial_permisos:
+                    datos_hist_perm.append({
+                        "Fecha": hp.date.strftime('%d/%m/%Y'),
+                        "Estatus": hp.status,
+                        "Detalle / Observación": hp.observation,
+                        "Evidencia": "📎 Sí" if hp.evidencia_path else "—"
+                    })
+
+                df_hp = pd.DataFrame(datos_hist_perm)
+                st.dataframe(df_hp, width='stretch', height=200)
+
+                registros_con_evidencia = [hp for hp in historial_permisos if hp.evidencia_path]
+                if registros_con_evidencia:
+                    st.markdown("###### 📎 Evidencias adjuntas")
+                    for hp in registros_con_evidencia:
+                        if os.path.exists(hp.evidencia_path):
+                            with open(hp.evidencia_path, "rb") as f_ev:
+                                st.download_button(
+                                    label=f"Descargar evidencia del {hp.date.strftime('%d/%m/%Y')}",
+                                    data=f_ev.read(),
+                                    file_name=os.path.basename(hp.evidencia_path),
+                                    key=f"btn_desc_evid_{hp.id}"
+                                )
+            else:
+                st.info("ℹ️ No hay permisos ni observaciones registradas para este estudiante actualmente.")
 # -------------------------------------------------------------
 # TAB: CARGA Y GESTIÓN DE DOCENTES (SOLO ADMIN)
 # -------------------------------------------------------------

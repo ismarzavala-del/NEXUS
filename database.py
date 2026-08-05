@@ -1,6 +1,7 @@
 import math
+import streamlit as st
 from datetime import datetime, date, time
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Time, Text
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Date, Time, Text, text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 Base = declarative_base()
@@ -14,6 +15,7 @@ class User(Base):
     role = Column(String(20), nullable=False)  # 'Admin', 'Docente', 'Alumno'
     assigned_section = Column(String(50), nullable=True)  # Sección asignada como Orientador/Tutor
     student_id = Column(Integer, ForeignKey('students.id'), nullable=True)
+    device_id = Column(String(100), nullable=True)  # Dispositivo vinculado para asistencia por QR
 
     student = relationship('Student')
 
@@ -40,8 +42,9 @@ class Attendance(Base):
     student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
     subject_id = Column(Integer, ForeignKey('subjects.id'), nullable=False)
     date = Column(Date, default=date.today, nullable=False)
-    status = Column(String(40), default='Presente', nullable=False)
+    status = Column(String(40), default='Presente', nullable=False)  # 'Presente', 'Tardanza', 'Ausente', 'Permiso'
     observation = Column(Text, nullable=True)
+    evidencia_path = Column(Text, nullable=True)  # Ruta al archivo de evidencia (imagen/PDF) de la justificación
 
     student = relationship('Student', back_populates='attendances')
     subject = relationship('Subject', back_populates='subject_attendances')
@@ -74,6 +77,43 @@ class Justification(Base):
     student = relationship('Student', back_populates='justifications')
 
 
+class ActaAsistencia(Base):
+    __tablename__ = 'actas_asistencia'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    fecha_generacion = Column(Date, default=date.today, nullable=False)
+    pct_asistencia_snapshot = Column(Integer, nullable=True)  # % de asistencia al momento de generar el acta
+    patrones_snapshot = Column(Text, nullable=True)  # patrones detectados, uno por línea
+    acuerdos = Column(Text, nullable=True)  # acuerdos del estudiante, uno por línea
+    compromisos = Column(Text, nullable=True)  # compromisos institucionales, uno por línea
+    case_tracker_id = Column(Integer, ForeignKey('case_tracker.id'), nullable=True)
+    creado_por = Column(String(50), nullable=True)  # username del docente que la generó
+
+    student = relationship('Student')
+    case = relationship('CaseTracker')
+
+
+class QRAttendanceToken(Base):
+    """Token de un QR de asistencia rápida generado por un docente, válido por 5 minutos."""
+    __tablename__ = 'qr_attendance_tokens'
+    id = Column(Integer, primary_key=True)
+    token = Column(String(64), unique=True, nullable=False)
+    seccion = Column(String(50), nullable=False)
+    subject_id = Column(Integer, ForeignKey('subjects.id'), nullable=True)
+    docente_username = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class QRAttendanceCheckin(Base):
+    """Registro de qué estudiante canjeó cuál token de QR (evita doble canje y sirve de auditoría)."""
+    __tablename__ = 'qr_attendance_checkins'
+    id = Column(Integer, primary_key=True)
+    token_id = Column(Integer, ForeignKey('qr_attendance_tokens.id'), nullable=False)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    checked_in_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
 class Schedule(Base):
     __tablename__ = 'schedules'
     id = Column(Integer, primary_key=True)
@@ -86,7 +126,17 @@ class Schedule(Base):
     subject = relationship('Subject')
 
 
-engine = create_engine('sqlite:///student_monitor.db', echo=False)
+# --- CONEXIÓN A POSTGRESQL (Neon) ---
+# La URL de conexión NUNCA va escrita aquí en el código: se lee desde
+# .streamlit/secrets.toml en local, o desde el panel "Secrets" de Streamlit
+# Cloud en producción. Así, el mismo código se conecta a la rama 'dev' cuando
+# trabajas en PyCharm y a la rama 'production' cuando corre desplegado,
+# simplemente porque cada entorno tiene un secrets.toml distinto.
+DB_URL = st.secrets["connections"]["postgresql"]["url"]
+
+# pool_pre_ping=True: revisa que la conexión siga viva antes de usarla.
+# Es importante con Neon porque el "pooler" puede cerrar conexiones inactivas.
+engine = create_engine(DB_URL, pool_pre_ping=True, echo=False)
 
 
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -104,6 +154,22 @@ def init_db():
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
+
+    # --- PARCHE QUIRÚRGICO: agrega columnas nuevas a bases de datos ya existentes ---
+    # (Base.metadata.create_all NO agrega columnas a tablas que ya existen, solo crea
+    # tablas nuevas; por eso columnas añadidas después del primer despliegue necesitan
+    # esta migración manual, protegida con try/except para no romper si ya existe.)
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE attendances ADD COLUMN evidencia_path TEXT"))
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN device_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass
 
     sub_names = ["Informática", "Lenguaje", "Matemática"]
     for s_name in sub_names:
@@ -149,5 +215,3 @@ def init_db():
 def get_session():
     Session = sessionmaker(bind=engine)
     return Session()
-
-
